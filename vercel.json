@@ -1,12 +1,23 @@
 {
-    "build": {
-        "src": "flask_api.py",
-        "use": "@vercel/python"
-    },
+    "version": 2,
+    "builds": [
+        {
+            "src": "flask_api.py",
+            "use": "@vercel/python"
+        }
+    ],
     "routes": [
         {
             "src": "/(.*)",
             "dest": "flask_api.py"
         }
-    ]
+    ],
+    "env": {
+        "PYTHONPATH": "."
+    },
+    "functions": {
+        "flask_api.py": {
+            "maxDuration": 30
+        }
+    }
 }

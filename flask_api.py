@@ -213,6 +213,7 @@ def internal_error(error):
         'status': 'error'
     }), 500
 
+# For local development
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
@@ -227,4 +228,4 @@ if __name__ == '__main__':
     print("  GET  /api/health - Health check")
     print("-" * 50)
     
-    app.run() 
+    app.run(host='0.0.0.0', port=port, debug=debug) 
