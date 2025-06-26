@@ -3,21 +3,32 @@
     "builds": [
         {
             "src": "flask_api.py",
-            "use": "@vercel/python"
+            "use": "@vercel/python",
+            "config": {
+                "runtime": "python3.9",
+                "maxLambdaSize": "15mb"
+            }
         }
     ],
     "routes": [
         {
+            "src": "/api/(.*)",
+            "dest": "/flask_api.py"
+        },
+        {
             "src": "/(.*)",
-            "dest": "flask_api.py"
+            "dest": "/flask_api.py"
         }
     ],
     "env": {
-        "PYTHONPATH": "."
+        "PYTHONPATH": ".",
+        "FLASK_ENV": "production"
     },
     "functions": {
         "flask_api.py": {
-            "maxDuration": 30
+            "maxDuration": 30,
+            "memory": 1024
         }
-    }
+    },
+    "regions": ["iad1"]
 }
