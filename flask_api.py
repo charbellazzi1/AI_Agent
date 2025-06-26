@@ -20,6 +20,13 @@ CORS(app)  # Enable CORS for all routes
 # Store chat sessions by session ID (you can implement more sophisticated session management)
 chat_sessions = {}
 
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'status': 'healthy',
+        'message': 'Restaurant AI Agent API is running'
+    }), 200
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint."""
