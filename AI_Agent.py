@@ -208,29 +208,17 @@ graph.add_edge("tools", "agent")
 # Compile the graph
 app = graph.compile()
 
-# Global variable to maintain chat state
-chat_state = {"messages": []}
-
 def chat_with_bot(user_input: str) -> str:
     """
-    Function to chat with the bot while maintaining conversation history.
-    The state automatically handles message history through add_messages.
+    Function to chat with the bot. Each request is stateless.
+    Frontend handles conversation history management.
     """
-    global chat_state
-    
     try:
-        # Add the new user message and run the agent
-        # The add_messages function in AgentState will handle appending to existing messages
+        # Create a fresh state for each request
         current_input = {"messages": [HumanMessage(content=user_input)]}
         
-        # If we have existing chat state, merge with new input
-        if chat_state["messages"]:
-            result = app.invoke({**chat_state, **current_input})
-        else:
-            result = app.invoke(current_input)
-        
-        # Update the chat state with the complete result
-        chat_state = result
+        # Run the agent with just the current message
+        result = app.invoke(current_input)
         
         # Extract the last AI message
         ai_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
@@ -246,22 +234,12 @@ def chat_with_bot(user_input: str) -> str:
         print(f"Error running agent: {e}")
         return f"Sorry, I encountered an error: {str(e)}"
 
-def reset_chat():
-    """Reset the chat history to start a new conversation."""
-    global chat_state
-    chat_state = {"messages": []}
-    print("Chat history has been reset.")
-
-def get_chat_history():
-    """Get the current chat history for debugging purposes."""
-    global chat_state
-    return chat_state["messages"]
-
-# Interactive chat function for testing
+# Interactive chat function for testing (kept for local development)
 def start_interactive_chat():
-    """Start an interactive chat session."""
+    """Start an interactive chat session for local testing."""
     print("🍽️ Welcome to TableReserve Restaurant Assistant!")
-    print("Type 'quit' to exit, 'reset' to clear chat history, or 'history' to see conversation history.")
+    print("Type 'quit' to exit or enter your message.")
+    print("Note: Each message is processed independently (stateless mode)")
     print("-" * 50)
     
     while True:
@@ -270,17 +248,6 @@ def start_interactive_chat():
         if user_input.lower() == 'quit':
             print("Thanks for using TableReserve! Goodbye! 👋")
             break
-        elif user_input.lower() == 'reset':
-            reset_chat()
-            print("Chat history cleared. Starting fresh!")
-            continue
-        elif user_input.lower() == 'history':
-            history = get_chat_history()
-            print(f"\n📝 Chat History ({len(history)} messages):")
-            for i, msg in enumerate(history):
-                msg_type = "User" if isinstance(msg, HumanMessage) else "Bot"
-                print(f"{i+1}. {msg_type}: {msg.content}")
-            continue
         elif not user_input:
             print("Please enter a message.")
             continue
