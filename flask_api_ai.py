@@ -12,6 +12,8 @@ CORS(app)
 
 # Try to import AI functionality with graceful fallback
 AI_AVAILABLE = False
+STAFF_AI_AVAILABLE = False
+
 try:
     from AI_Agent import chat_with_bot, getAllCuisineTypes
     AI_AVAILABLE = True
@@ -20,12 +22,21 @@ except Exception as e:
     logger.warning(f"AI Agent import failed: {e}")
     AI_AVAILABLE = False
 
+try:
+    from AI_Agent_Restaurant import chat_with_staff_bot
+    STAFF_AI_AVAILABLE = True
+    logger.info("Restaurant Staff AI Agent imported successfully")
+except Exception as e:
+    logger.warning(f"Restaurant Staff AI Agent import failed: {e}")
+    STAFF_AI_AVAILABLE = False
+
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
         'status': 'healthy',
         'message': 'Restaurant AI Agent API is running',
         'ai_available': AI_AVAILABLE,
+        'staff_ai_available': STAFF_AI_AVAILABLE,
         'environment_check': {
             'GOOGLE_API_KEY': 'Set' if os.getenv('GOOGLE_API_KEY') else 'Missing',
             'EXPO_PUBLIC_SUPABASE_URL': 'Set' if os.getenv('EXPO_PUBLIC_SUPABASE_URL') else 'Missing',
@@ -39,7 +50,8 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'message': 'Restaurant AI Agent API is running',
-        'ai_available': AI_AVAILABLE
+        'ai_available': AI_AVAILABLE,
+        'staff_ai_available': STAFF_AI_AVAILABLE
     }), 200
 
 @app.route('/api/chat', methods=['POST'])
@@ -139,6 +151,60 @@ def get_cuisine_types():
             'status': 'error'
         }), 500
 
+@app.route('/api/staff/chat', methods=['POST'])
+def staff_chat():
+    """
+    Chat endpoint specifically for restaurant staff assistance.
+    Requires restaurant_id in the request.
+    """
+    try:
+        if not STAFF_AI_AVAILABLE:
+            return jsonify({
+                'error': 'Staff AI functionality not available',
+                'message': 'Please check environment variables and dependencies',
+                'status': 'error'
+            }), 503
+
+        data = request.get_json()
+        
+        if not data or 'message' not in data:
+            return jsonify({
+                'error': 'Message is required',
+                'status': 'error'
+            }), 400
+        
+        user_message = data['message'].strip()
+        restaurant_id = data.get('restaurant_id')
+        session_id = data.get('session_id', 'staff_default')
+        
+        if not user_message:
+            return jsonify({
+                'error': 'Message cannot be empty',
+                'status': 'error'
+            }), 400
+        
+        logger.info(f"Received staff message from session {session_id}: {user_message}")
+        
+        # Get Staff AI response
+        staff_response = chat_with_staff_bot(user_message, restaurant_id)
+        
+        logger.info(f"Staff AI response for session {session_id}: {staff_response}")
+        
+        return jsonify({
+            'response': staff_response,
+            'session_id': session_id,
+            'restaurant_id': restaurant_id,
+            'status': 'success'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in staff chat endpoint: {str(e)}")
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e),
+            'status': 'error'
+        }), 500
+
 @app.route('/api/test', methods=['POST'])
 def test_endpoint():
     """Test endpoint for debugging purposes."""
@@ -149,6 +215,7 @@ def test_endpoint():
             'message': 'Test endpoint working',
             'received_data': data,
             'ai_available': AI_AVAILABLE,
+            'staff_ai_available': STAFF_AI_AVAILABLE,
             'status': 'success'
         }), 200
         
