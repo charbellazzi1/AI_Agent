@@ -52,6 +52,11 @@ You are an AI assistant specifically designed to help restaurant staff work more
    - Provide insights from booking and customer data
    - Help staff make informed decisions quickly
 
+6. **Waitlist Management**
+   - View current waitlist and who’s next
+   - Summarize waitlist volume and average waits
+   - Estimate wait time for a given party size
+
 **IMPORTANT CONSTRAINTS:**
 - ONLY answer questions related to restaurant operations, staff assistance, and customer service
 - DO NOT provide code, programming solutions, or technical implementations
@@ -449,6 +454,153 @@ def checkBookingDetails(confirmation_code: str = None, booking_id: str = None) -
 
 tools.append(checkBookingDetails)
 
+# -----------------------------
+# Waitlist tools (read/insights)
+# -----------------------------
+
+@tool
+def getWaitlist(restaurant_id: str, status: str = None) -> str:
+    """Get current waitlist entries for a restaurant. Optionally filter by status (e.g., 'waiting')."""
+    print(f"Staff AI is fetching waitlist for restaurant: {restaurant_id}")
+    try:
+        # Select known, schema-friendly columns
+        query = (
+            supabase
+            .table("waitlist")
+            .select("id, restaurant_id, party_size, status, joined_at, quoted_wait_minutes, priority, notified_at")
+            .eq("restaurant_id", restaurant_id)
+        )
+        if status:
+            query = query.eq("status", status)
+        try:
+            result = query.order("joined_at").execute()
+        except Exception:
+            # Fallback to all columns if specific list fails
+            result = (
+                supabase
+                .table("waitlist")
+                .select("*")
+                .eq("restaurant_id", restaurant_id)
+                .execute()
+            )
+
+        entries = result.data
+        if not entries:
+            return json.dumps({"count": 0, "entries": []})
+
+        return json.dumps({"count": len(entries), "entries": entries})
+    except Exception as e:
+        print(f"Error fetching waitlist: {e}")
+        return f"Error retrieving waitlist: {str(e)}"
+
+tools.append(getWaitlist)
+
+@tool
+def getWaitlistStats(restaurant_id: str) -> str:
+    """Get summary stats for the restaurant waitlist: counts by status, average quoted wait, next in line."""
+    print(f"Staff AI is computing waitlist stats for restaurant: {restaurant_id}")
+    try:
+        # Fetch all current entries
+        try:
+            result = (
+                supabase
+                .table("waitlist")
+                .select("id, restaurant_id, party_size, status, joined_at, quoted_wait_minutes, priority, notified_at")
+                .eq("restaurant_id", restaurant_id)
+                .execute()
+            )
+        except Exception:
+            result = supabase.table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
+
+        entries = result.data or []
+
+        # Aggregate
+        status_counts = defaultdict(int)
+        quoted_minutes = []
+        waiting_entries = []
+        for entry in entries:
+            status_value = entry.get("status", "unknown")
+            status_counts[status_value] += 1
+            qm = entry.get("quoted_wait_minutes")
+            if isinstance(qm, (int, float)):
+                quoted_minutes.append(qm)
+            if status_value in ("waiting", "notified", "queued", "pending"):
+                waiting_entries.append(entry)
+
+        # Sort waiting by priority then joined_at
+        def parse_joined_at(value: str):
+            try:
+                return datetime.fromisoformat(value.replace('Z', '+00:00')) if value else datetime.min
+            except Exception:
+                return datetime.min
+
+        waiting_entries.sort(key=lambda e: (
+            -(e.get("priority") or 0),
+            parse_joined_at(e.get("joined_at"))
+        ))
+
+        average_quoted = round(sum(quoted_minutes) / len(quoted_minutes), 1) if quoted_minutes else None
+
+        next_up = waiting_entries[0] if waiting_entries else None
+
+        stats = {
+            "total_waiting": sum(status_counts.get(s, 0) for s in ["waiting", "notified", "queued", "pending"]),
+            "status_breakdown": dict(status_counts),
+            "average_quoted_wait_minutes": average_quoted,
+            "next_up": next_up,
+        }
+
+        return json.dumps(stats)
+    except Exception as e:
+        print(f"Error computing waitlist stats: {e}")
+        return f"Error computing waitlist stats: {str(e)}"
+
+tools.append(getWaitlistStats)
+
+@tool
+def estimateWaitTime(restaurant_id: str, party_size: int) -> str:
+    """Estimate wait time (minutes) for a given party size using current waitlist data."""
+    print(f"Staff AI is estimating wait time for party of {party_size} at restaurant: {restaurant_id}")
+    try:
+        # Load waitlist
+        try:
+            wl_result = (
+                supabase
+                .table("waitlist")
+                .select("id, party_size, status, joined_at, quoted_wait_minutes, priority")
+                .eq("restaurant_id", restaurant_id)
+                .execute()
+            )
+        except Exception:
+            wl_result = supabase.table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
+
+        entries = wl_result.data or []
+
+        # Consider only active/waiting entries
+        active_statuses = {"waiting", "notified", "queued", "pending"}
+        waiting_entries = [e for e in entries if (e.get("status") in active_statuses)]
+
+        # If there are quoted waits for similar party sizes, use their average
+        similar_quotes = [e.get("quoted_wait_minutes") for e in waiting_entries if isinstance(e.get("quoted_wait_minutes"), (int, float)) and abs((e.get("party_size") or 0) - party_size) <= 1]
+        if similar_quotes:
+            estimate = round(sum(similar_quotes) / len(similar_quotes))
+        else:
+            # Fallback heuristic: 12 minutes per party ahead (light load), 18 if high load
+            parties_ahead = sum(1 for e in waiting_entries if (e.get("party_size") or 0) <= party_size)
+            per_party_min = 12 if len(waiting_entries) <= 5 else 18
+            estimate = max(per_party_min, parties_ahead * per_party_min)
+
+        return json.dumps({
+            "party_size": party_size,
+            "estimated_wait_minutes": int(estimate),
+            "active_waitlist_count": len(waiting_entries)
+        })
+    except Exception as e:
+        print(f"Error estimating wait time: {e}")
+        return f"Error estimating wait time: {str(e)}"
+
+tools.append(estimateWaitTime)
+
 # Initialize the model
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash", 
@@ -665,6 +817,47 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None) -> str:
                     peak = stats.get('peak_hour')
                     peak_text = f", peak hour {peak.get('hour')}:00 with {peak.get('covers')} covers" if peak else ""
                     return f"Today's stats: {total} bookings, {covers} covers{peak_text}."
+                except Exception:
+                    pass
+
+            # 7) Waitlist entries
+            waitlist_result = tool_results_by_name.get('getWaitlist')
+            if waitlist_result:
+                try:
+                    data = json.loads(waitlist_result)
+                    count = data.get('count', 0)
+                    entries = data.get('entries', [])
+                    if count == 0:
+                        return "No one is currently on the waitlist."
+                    first = entries[0] if entries else {}
+                    size = first.get('party_size', '?')
+                    return f"Waitlist: {count} part{'ies' if count != 1 else 'y'} waiting. Next up: party of {size}."
+                except Exception:
+                    pass
+
+            # 8) Waitlist stats
+            waitlist_stats_result = tool_results_by_name.get('getWaitlistStats')
+            if waitlist_stats_result:
+                try:
+                    data = json.loads(waitlist_stats_result)
+                    total_waiting = data.get('total_waiting', 0)
+                    next_up = data.get('next_up') or {}
+                    size = next_up.get('party_size', 'N/A') if isinstance(next_up, dict) else 'N/A'
+                    avg = data.get('average_quoted_wait_minutes')
+                    avg_text = f", avg quoted {avg} min" if avg is not None else ""
+                    return f"Waitlist: {total_waiting} active{avg_text}. Next up: party of {size}."
+                except Exception:
+                    pass
+
+            # 9) Wait time estimate
+            wait_est_result = tool_results_by_name.get('estimateWaitTime')
+            if wait_est_result:
+                try:
+                    data = json.loads(wait_est_result)
+                    est = data.get('estimated_wait_minutes')
+                    size = data.get('party_size')
+                    if est is not None:
+                        return f"Estimated wait for party of {size}: ~{est} minutes."
                 except Exception:
                     pass
         
