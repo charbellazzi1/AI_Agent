@@ -219,16 +219,62 @@ def chat_with_bot(user_input: str) -> str:
         
         # Run the agent with just the current message
         result = app.invoke(current_input)
-        
-        # Extract the last AI message
+
+        # Extract messages
         ai_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
-        
+        tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
+
+        # If we have a proper AI response, return it
         if ai_messages:
             last_ai_message = ai_messages[-1]
-            return last_ai_message.content or "I apologize, but I couldn't generate a proper response. Please try again."
-        else:
-            print("No AI messages found in result")
-            return "Sorry, I couldn't process your request."
+            if last_ai_message.content and last_ai_message.content.strip():
+                return last_ai_message.content
+
+        # Build a helpful fallback from tool outputs if available
+        try:
+            # Collect tool outputs by name when possible
+            tool_results_by_name = {}
+            for tool_msg in tool_messages:
+                tool_name = getattr(tool_msg, 'name', None)
+                if tool_name:
+                    tool_results_by_name[tool_name] = tool_msg.content
+
+            import json as _json
+
+            # Prefer specific restaurant lists
+            by_cuisine = tool_results_by_name.get('getRestaurantsByCuisineType')
+            all_restaurants = tool_results_by_name.get('getAllRestaurants')
+            cuisines = tool_results_by_name.get('getAllCuisineTypes')
+
+            # Helper to extract up to 5 ids and craft RESTAURANTS_TO_SHOW
+            def _format_restaurant_response(items_json: str, header: str) -> str:
+                try:
+                    items = _json.loads(items_json)
+                    if isinstance(items, list) and items:
+                        ids = [str(x.get('id')) for x in items if isinstance(x, dict) and x.get('id')]
+                        ids = [i for i in ids if i][:5]
+                        suffix = ("\nRESTAURANTS_TO_SHOW: " + ",".join(ids)) if ids else ""
+                        return (header + suffix).strip()
+                except Exception:
+                    pass
+                return header
+
+            if by_cuisine:
+                return _format_restaurant_response(by_cuisine, "Here are some options I found for that cuisine.")
+            if all_restaurants:
+                return _format_restaurant_response(all_restaurants, "Here are some restaurants you might like.")
+            if cuisines:
+                try:
+                    cu = _json.loads(cuisines)
+                    if isinstance(cu, list) and cu:
+                        return "Available cuisine types: " + ", ".join(map(str, cu[:10]))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        print("No AI messages found in result and no usable tool fallback")
+        return "I apologize, I couldn't generate a proper response. Please try again."
             
     except Exception as e:
         print(f"Error running agent: {e}")
