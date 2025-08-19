@@ -78,6 +78,7 @@ def chat():
         
         user_message = data['message'].strip()
         session_id = data.get('session_id', 'default')
+        user_id = data.get('user_id')  # Optional user ID for personalization
         
         if not user_message:
             return jsonify({
@@ -85,10 +86,11 @@ def chat():
                 'status': 'error'
             }), 400
         
-        logger.info(f"Received message from session {session_id}: {user_message}")
+        logger.info(f"Received message from session {session_id} (user: {user_id}): {user_message}")
         
         # Get AI response - each request is stateless since frontend manages history
-        ai_response = chat_with_bot(user_message)
+        # Pass user_id for personalized responses
+        ai_response = chat_with_bot(user_message, memory=None, user_id=user_id)
         
         logger.info(f"AI response for session {session_id}: {ai_response}")
         
@@ -107,6 +109,7 @@ def chat():
             'response': response_text,
             'restaurants_to_show': restaurants_to_show,
             'session_id': session_id,
+            'user_id': user_id,
             'status': 'success'
         }), 200
         

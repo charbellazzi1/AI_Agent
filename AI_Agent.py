@@ -18,6 +18,7 @@ from availability_tools import (
     search_time_range as av_search_time_range,
 )
 import json
+from typing import List
 
 load_dotenv()
 url: str = os.environ.get("EXPO_PUBLIC_SUPABASE_URL")
@@ -40,6 +41,39 @@ class AgentState(TypedDict):
 
 # Get timezone for consistent date handling
 _LOCAL_TZ = tz.gettz(os.getenv("AVAILABILITY_TZ", "Asia/Beirut")) or tz.UTC
+
+# Conversation memory system
+class ConversationMemory:
+    def __init__(self, max_history: int = 20):
+        """Initialize conversation memory with a maximum history limit."""
+        self.messages: List[BaseMessage] = []
+        self.max_history = max_history
+    
+    def add_message(self, message: BaseMessage):
+        """Add a message to the conversation history."""
+        self.messages.append(message)
+        # Keep only the most recent messages to prevent context overflow
+        if len(self.messages) > self.max_history:
+            self.messages = self.messages[-self.max_history:]
+    
+    def get_messages(self) -> List[BaseMessage]:
+        """Get all messages in the conversation history."""
+        return self.messages.copy()
+    
+    def clear(self):
+        """Clear the conversation history."""
+        self.messages.clear()
+    
+    def get_context_size(self) -> int:
+        """Get the number of messages in history."""
+        return len(self.messages)
+
+# Global conversation memory instance for interactive sessions
+conversation_memory = ConversationMemory()
+
+def create_conversation_memory(max_history: int = 20) -> ConversationMemory:
+    """Create a new conversation memory instance for external use."""
+    return ConversationMemory(max_history)
 
 tools = []
 
@@ -83,63 +117,89 @@ def convertRelativeDate(relative_date: str) -> str:
 tools.append(convertRelativeDate)
 
 system_prompt = """
-You are a specialized restaurant assistant for TableReserve, a restaurant reservation app. Your ONLY role is to:
+You are a specialized restaurant assistant for Plate your name is DineMate, a restaurant reservation app.
+
+## YOUR ROLE
+Your ONLY responsibilities are to:
 1. Help users find restaurants based on their preferences
-2. Provide information about restaurants including cuisine type, price range, and features
-3. Answer questions about restaurant availability and booking policies
-4. Be friendly and professional in your responses
+2. Provide personalized recommendations using user profile data (allergies, dietary restrictions, favorite cuisines, preferred party size)
+3. Provide information about restaurants (cuisine, price, features, ratings)
+4. Answer questions about restaurant availability and booking policies
+5. Maintain a friendly and professional tone
 
-You have access to restaurant data including:
+## AVAILABLE DATA
+You have access to comprehensive restaurant information:
 - Restaurant names, descriptions, and cuisine types
-- Price ranges (1-4)
-- Features like outdoor seating, parking, and shisha availability
+- Price ranges (1-4) and average ratings
+- Features: outdoor seating, parking, shisha availability
 - Opening hours and booking policies
-- Ratings and reviews
+- Real-time availability data
 
+## RESPONSE FORMAT
+When showing restaurants to users, ALWAYS use this exact format:
 
-RESPONSE FORMAT INSTRUCTIONS:
-When your response involves showing specific restaurants to the user, you MUST format your response as follows:
+**Structure:**
+1. Provide your conversational response
+2. Add "RESTAURANTS_TO_SHOW:" on a new line
+3. List restaurant IDs separated by commas (max 5 IDs)
 
-1. Start with your conversational text response
-2. Then add "RESTAURANTS_TO_SHOW:" on a new line
-3. Then list the restaurant IDs that should be displayed as cards, separated by commas
-4. Example:
-   "I found some great Italian restaurants for you!
-   RESTAURANTS_TO_SHOW: restaurant-1,restaurant-2,restaurant-3"
+**Example:**
+```
+I found some great Italian restaurants for you!
+RESTAURANTS_TO_SHOW: restaurant-1,restaurant-2,restaurant-3
+```
 
- ALWAYS follow these rules when recommending or listing restaurants:
- - Use the database tools FIRST to fetch real restaurants (do not guess or invent IDs)
- - Include up to 5 IDs only
- - Prioritize restaurants where ai_featured is true, then by highest average_rating
- - After finishing any tool usage, call the finishedUsingTools tool once
+## RESTAURANT RECOMMENDATION RULES
+- **ALWAYS** use database tools first - never guess or invent restaurant IDs
+- **ALWAYS** prioritize restaurants where ai_featured = true, then by highest average_rating
+- **LIMIT** to maximum 5 restaurant IDs
+- **CALL** finishedUsingTools after completing any tool usage
 
-IMPORTANT CONSTRAINTS:
-- ONLY answer questions related to restaurants, dining, and reservations
+## WORKFLOW GUIDELINES
+
+### For Restaurant Discovery/Recommendations:
+1. Use appropriate search tool (by cuisine, name, featured, or advanced filters)
+2. **IF USER PROFILE PROVIDED:** Consider user's allergies, dietary restrictions, and favorite cuisines
+3. Filter recommendations based on user's allergies and dietary restrictions when available
+4. Prioritize user's favorite cuisines when provided
+5. Format response with RESTAURANTS_TO_SHOW
+6. Call finishedUsingTools
+
+### For User Profile-Based Personalization:
+- User profile data (if available) will be provided in conversation context
+- Always consider allergies and dietary_restrictions when recommending restaurants
+- Use preferred_party_size for availability queries if not specified by user
+- Mention user's favorite_cuisines in recommendations when relevant
+- Reference loyalty_points for special offers or tier-based suggestions
+
+### For Availability Questions:
+1. **FIRST:** Convert relative dates using convertRelativeDate tool
+   - "today", "tomorrow", "tonight" → YYYY-MM-DD format
+2. **SECOND:** Find restaurant using getRestaurantsByName
+3. **THIRD:** Use availability tools with converted date:
+   - checkAnyTimeSlots (yes/no availability)
+   - getAvailableTimeSlots (list specific times)
+   - getTableOptionsForSlot (table details for specific time)
+   - searchTimeRange (explore time windows)
+4. **PARTY SIZE:** Use user's preferred_party_size from profile if available, otherwise assume 2 people (state this clearly)
+5. **FINISH:** Call finishedUsingTools
+
+## STRICT CONSTRAINTS
+**SCOPE LIMITATIONS:**
+- ONLY answer restaurant, dining, and reservation questions
 - DO NOT provide code, programming solutions, or technical implementations
-- DO NOT answer questions outside the scope of restaurant assistance
-- If asked about non-restaurant topics, politely redirect to restaurant-related subjects
-- Always base your responses on the available restaurant data 
-- When recommending restaurants, always use the "RESTAURANTS_TO_SHOW:" format
-- Keep responses focused on helping users find and book restaurants
-- You are only allowed to use the tools provided to you for looking up restaurant data
-- After using any tools to gather restaurant information, call the finishedUsingTools tool to signal completion
-- If you can answer without using tools (like general questions about the service), you can respond directly without calling finishedUsingTools
-- Make sure to show first the restaurants id of the ones that has the ai_featured column set to true , this way they would be shown first to the user and then show the others
+- DO NOT answer questions outside restaurant assistance scope
+- Politely redirect non-restaurant topics to restaurant-related subjects
 
- TOOL USAGE POLICY:
- - For any discovery or recommendation intent (e.g., "recommend", "find", "show options", specific cuisines), prefer calling the search tools first
- - Use the most appropriate tool: by cuisine, name, featured, or advanced filters
- - Return real IDs in RESTAURANTS_TO_SHOW; never fabricate values
-  - For availability questions (e.g., "any slots available today at X?"):
-    1. FIRST convert any relative dates (today, tomorrow, etc.) using convertRelativeDate tool
-    2. Then find the restaurant by name using getRestaurantsByName
-    3. Then use the availability tools with the converted date:
-       - checkAnyTimeSlots to answer yes/no
-       - getAvailableTimeSlots to list specific times
-       - getTableOptionsForSlot for table details at a time
-       - searchTimeRange to explore a time window
-    CRITICAL: Always use convertRelativeDate for relative dates like "today", "tomorrow", "tonight", etc. before calling availability tools.
-    Defaults: assume party size = 2 if not provided; explicitly state any assumptions in your answer.
+**DATA INTEGRITY:**
+- Base ALL responses on available restaurant data
+- Use ONLY the tools provided for restaurant data lookup
+- NEVER fabricate restaurant IDs or information
+
+**RESPONSE POLICY:**
+- For tool-based responses: ALWAYS call finishedUsingTools when complete
+- For direct responses (general service questions): respond without tools
+- Keep all responses focused on restaurant discovery and booking assistance
 """
 restaurants_table_columns:str = "id, name, description, address, tags, opening_time, closing_time, cuisine_type, price_range, average_rating, dietary_options, ambiance_tags, outdoor_seating, ai_featured"
 @tool
@@ -149,6 +209,37 @@ def finishedUsingTools() -> str:
     return "Tools usage completed. Ready to provide response."
 
 tools.append(finishedUsingTools)
+
+# User profile data is now pre-fetched and provided in conversation context
+# No need for getUserProfile tool - data comes from external source for security
+
+def fetch_user_profile(user_id: str) -> Optional[dict]:
+    """Fetch user profile data externally (not as an AI tool).
+    Returns user profile dict or None if not found/error."""
+    try:
+        if not supabase or not user_id or not user_id.strip():
+            return None
+        
+        print(f"Fetching user profile for user_id: {user_id}")
+        result = (
+            supabase
+            .table("profiles")
+            .select("full_name, allergies, favorite_cuisines, dietary_restrictions, preferred_party_size, loyalty_points")
+            .eq("id", user_id.strip())
+            .execute()
+        )
+        
+        if not result.data or len(result.data) == 0:
+            print(f"No profile found for user_id: {user_id}")
+            return None
+        
+        user_profile = result.data[0]
+        print(f"Retrieved user profile: {user_profile}")
+        return user_profile
+        
+    except Exception as e:
+        print(f"Error fetching user profile: {e}")
+        return None
 
 @tool
 def getAllCuisineTypes() -> str:
@@ -400,9 +491,10 @@ def getAvailableTimeSlots(restaurant_id: str, date: str, party_size: int, user_i
 tools.append(getAvailableTimeSlots)
 
 @tool
-def getTableOptionsForSlot(restaurant_id: str, date: str, time: str, party_size: int) -> str:
+def getTableOptionsForSlot(restaurant_id: str, date: str, time: str, party_size: int, user_id: Optional[str] = None) -> str:
     """Return table options for a specific time slot, or null if none."""
     try:
+        # Note: The underlying function may not use user_id, but we keep it for consistency
         options = av_get_table_options_for_slot(restaurant_id, date, time, int(party_size))
         return json.dumps(options)
     except Exception as e:
@@ -499,12 +591,19 @@ graph.add_edge("tools", "agent")
 # Compile the graph
 app = graph.compile()
 
-def chat_with_bot(user_input: str) -> str:
+def chat_with_bot(user_input: str, memory: Optional[ConversationMemory] = None, user_id: Optional[str] = None) -> str:
     """
-    Function to chat with the bot. Each request is stateless.
-    Frontend handles conversation history management.
+    Function to chat with the bot. Can use conversation memory for context.
+    If memory is provided, maintains conversation history.
+    If memory is None, operates in stateless mode (for API usage).
+    If user_id is provided, pre-fetches user profile for personalization.
     """
     try:
+        # Fetch user profile data if user_id provided
+        user_profile = None
+        if user_id:
+            user_profile = fetch_user_profile(user_id)
+        
         # Lightweight intent detection to nudge the LLM to use tools and include IDs
         ui_lower = (user_input or "").lower()
         discovery_triggers = [
@@ -515,26 +614,74 @@ def chat_with_bot(user_input: str) -> str:
         ]
         should_nudge = any(t in ui_lower for t in discovery_triggers)
 
-        guiding_message = None
-        if should_nudge:
-            guiding_message = SystemMessage(content=(
-                "For this request, if it's about discovering restaurants, call the appropriate search tools first and include up to 5 real IDs in a line starting with 'RESTAURANTS_TO_SHOW:'. Prioritize featured and highly-rated restaurants.\n"
-                "If it's about availability for a specific restaurant: 1) FIRST use convertRelativeDate for any relative dates (today, tomorrow, etc.), 2) locate the restaurant via getRestaurantsByName, 3) use availability tools with the converted date (checkAnyTimeSlots, getAvailableTimeSlots, getTableOptionsForSlot, searchTimeRange). Assume party size 2 if unspecified; state assumptions. When done with tools, call finishedUsingTools."
-            ))
+        # Create profile context message if user profile is available
+        profile_message = None
+        if user_profile:
+            profile_info = []
+            if user_profile.get('full_name'):
+                profile_info.append(f"Name: {user_profile['full_name']}")
+            if user_profile.get('allergies') and user_profile['allergies']:
+                profile_info.append(f"Allergies: {', '.join(user_profile['allergies'])}")
+            if user_profile.get('favorite_cuisines') and user_profile['favorite_cuisines']:
+                profile_info.append(f"Favorite cuisines: {', '.join(user_profile['favorite_cuisines'])}")
+            if user_profile.get('dietary_restrictions') and user_profile['dietary_restrictions']:
+                profile_info.append(f"Dietary restrictions: {', '.join(user_profile['dietary_restrictions'])}")
+            if user_profile.get('preferred_party_size'):
+                profile_info.append(f"Preferred party size: {user_profile['preferred_party_size']}")
+            if user_profile.get('loyalty_points'):
+                profile_info.append(f"Loyalty points: {user_profile['loyalty_points']}")
+            
+            if profile_info:
+                profile_message = SystemMessage(content=f"USER PROFILE: {' | '.join(profile_info)}")
 
-        # Create a fresh state for each request, optionally with a guiding system message
-        base_messages = [HumanMessage(content=user_input)]
-        if guiding_message:
-            current_input = {"messages": [guiding_message] + base_messages}
-        else:
-            current_input = {"messages": base_messages}
+        # Create guiding message for tool usage
+        guiding_message = None
+        if should_nudge or user_profile:  # Create guidance if nudging needed OR user profile available
+            if user_profile:
+                guiding_message = SystemMessage(content=(
+                    "IMPORTANT: User profile data has been provided above. Use this information for personalized recommendations.\n"
+                    "For restaurant discovery: 1) Consider user's allergies, dietary restrictions, and favorite cuisines, 2) Call appropriate search tools, 3) Include up to 5 real IDs in 'RESTAURANTS_TO_SHOW:' format.\n"
+                    "For availability queries: 1) Use user's preferred party size from profile, 2) Use convertRelativeDate for relative dates, 3) Find restaurant via getRestaurantsByName, 4) Use availability tools.\n"
+                    "Always call finishedUsingTools when done."
+                ))
+            else:
+                guiding_message = SystemMessage(content=(
+                    "For this request, if it's about discovering restaurants: call the appropriate search tools and include up to 5 real IDs in a line starting with 'RESTAURANTS_TO_SHOW:'. Prioritize featured and highly-rated restaurants.\n"
+                    "If it's about availability for a specific restaurant: 1) FIRST use convertRelativeDate for any relative dates (today, tomorrow, etc.), 2) locate the restaurant via getRestaurantsByName, 3) use availability tools with the converted date. Assume party size 2 if unspecified; state assumptions. When done with tools, call finishedUsingTools."
+                ))
+
+        # Create user message
+        user_message = HumanMessage(content=user_input)
         
-        # Run the agent with just the current message
+        # Build message list based on whether we have conversation memory
+        messages_to_add = []
+        if profile_message:
+            messages_to_add.append(profile_message)
+        if guiding_message:
+            messages_to_add.append(guiding_message)
+        messages_to_add.append(user_message)
+        
+        if memory:
+            # Use conversation history
+            history_messages = memory.get_messages()
+            current_input = {"messages": history_messages + messages_to_add}
+        else:
+            # Stateless mode - just the current message with context
+            current_input = {"messages": messages_to_add}
+        
+        # Run the agent with the message(s)
         result = app.invoke(current_input)
 
         # Extract messages
         ai_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
         tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
+        
+        # Save conversation to memory if provided
+        if memory:
+            memory.add_message(user_message)
+            # Add the AI's final response to memory
+            if ai_messages:
+                memory.add_message(ai_messages[-1])
 
         # If we have a proper AI response, try to ensure IDs are present when intent suggests discovery
         if ai_messages:
@@ -542,14 +689,34 @@ def chat_with_bot(user_input: str) -> str:
             if last_ai_message.content and last_ai_message.content.strip():
                 text_content = last_ai_message.content.strip()
                 if "RESTAURANTS_TO_SHOW:" not in text_content:
-                    # Heuristic: only append restaurant IDs for discovery-type prompts, not availability questions
+                    # Better intent detection: only append restaurant IDs for actual discovery requests
                     intent_text = (user_input or "").lower()
+                    
+                    # Availability-related queries (no restaurants needed)
                     availability_markers = [
                         "available", "availability", "slot", "slots", "time", "times", "book", "reserve", "reservation",
                         "today", "tonight", "tomorrow", "opening", "openings"
                     ]
-                    discovery_only = not any(t in intent_text for t in availability_markers)
-                    if discovery_only:
+                    
+                    # Actual discovery/recommendation intents
+                    discovery_markers = [
+                        "recommend", "suggest", "find", "show", "options", "restaurant", "places", "cuisine",
+                        "near", "around", "best", "top", "where to", "looking for", "want to eat", "dinner",
+                        "lunch", "breakfast", "food", "italian", "chinese", "mexican", "indian", "japanese"
+                    ]
+                    
+                    # Greeting/general queries (no restaurants needed)
+                    greeting_markers = [
+                        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+                        "how are you", "what can you do", "help", "thanks", "thank you", "bye", "goodbye"
+                    ]
+                    
+                    is_availability_query = any(t in intent_text for t in availability_markers)
+                    is_discovery_query = any(t in intent_text for t in discovery_markers)
+                    is_greeting_query = any(t in intent_text for t in greeting_markers)
+                    
+                    # Only append restaurant IDs for actual discovery queries
+                    if is_discovery_query and not is_availability_query and not is_greeting_query:
                         try:
                             if supabase:
                                 result = (
@@ -637,24 +804,47 @@ def chat_with_bot(user_input: str) -> str:
 
 # Interactive chat function for testing (kept for local development)
 def start_interactive_chat():
-    """Start an interactive chat session for local testing."""
-    print("🍽️ Welcome to TableReserve Restaurant Assistant!")
-    print("Type 'quit' to exit or enter your message.")
-    print("Note: Each message is processed independently (stateless mode)")
-    print("-" * 50)
+    """Start an interactive chat session with conversation memory."""
+    print("🍽️ Welcome to DineMate - Your Restaurant Assistant!")
+    print("Commands:")
+    print("  - Type 'quit' to exit")
+    print("  - Type 'clear' to clear conversation history")
+    print("  - Type 'history' to see conversation context")
+    print("  - Type your restaurant questions naturally")
+    print("Note: Conversation memory is active - I'll remember our chat!")
+    print("-" * 60)
+    
+    # Use the global conversation memory
+    global conversation_memory
+    conversation_memory.clear()  # Start fresh
     
     while True:
         user_input = input("\nYou: ").strip()
         
         if user_input.lower() == 'quit':
-            print("Thanks for using TableReserve! Goodbye! 👋")
+            print("Thanks for using DineMate! Goodbye! 👋")
             break
+        elif user_input.lower() == 'clear':
+            conversation_memory.clear()
+            print("🧹 Conversation history cleared!")
+            continue
+        elif user_input.lower() == 'history':
+            messages = conversation_memory.get_messages()
+            if not messages:
+                print("📝 No conversation history yet.")
+            else:
+                print(f"📝 Conversation history ({len(messages)} messages):")
+                for i, msg in enumerate(messages, 1):
+                    msg_type = "You" if isinstance(msg, HumanMessage) else "DineMate"
+                    content = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                    print(f"  {i}. {msg_type}: {content}")
+            continue
         elif not user_input:
             print("Please enter a message.")
             continue
         
-        print("Bot: ", end="", flush=True)
-        response = chat_with_bot(user_input)
+        print("DineMate: ", end="", flush=True)
+        response = chat_with_bot(user_input, memory=conversation_memory)
         print(response)
 
 # Example usage for testing
