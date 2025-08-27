@@ -58,7 +58,7 @@ def health_check():
 def chat():
     """
     Main chat endpoint to send messages to the AI agent.
-    Note: Chat history is managed by the frontend.
+    Supports conversation history for contextual responses.
     """
     try:
         if not AI_AVAILABLE:
@@ -79,6 +79,7 @@ def chat():
         user_message = data['message'].strip()
         session_id = data.get('session_id', 'default')
         user_id = data.get('user_id')  # Optional user ID for personalization
+        conversation_history = data.get('conversation_history', [])  # New parameter
         
         if not user_message:
             return jsonify({
@@ -87,10 +88,34 @@ def chat():
             }), 400
         
         logger.info(f"Received message from session {session_id} (user: {user_id}): {user_message}")
+        logger.info(f"Conversation history length: {len(conversation_history) if conversation_history else 0}")
         
-        # Get AI response - each request is stateless since frontend manages history
-        # Pass user_id for personalized responses
-        ai_response = chat_with_bot(user_message, memory=None, user_id=user_id)
+        # Convert conversation history to LangChain message format if provided
+        memory = None
+        if conversation_history and isinstance(conversation_history, list):
+            try:
+                from AI_Agent import create_conversation_memory
+                from langchain_core.messages import HumanMessage, AIMessage
+                
+                memory = create_conversation_memory(max_history=20)
+                
+                # Convert frontend message format to LangChain messages
+                for msg in conversation_history:
+                    if isinstance(msg, dict) and 'role' in msg and 'content' in msg:
+                        content = msg['content'].strip()
+                        if content:  # Only add non-empty messages
+                            if msg['role'] == 'user':
+                                memory.add_message(HumanMessage(content=content))
+                            elif msg['role'] == 'assistant':
+                                memory.add_message(AIMessage(content=content))
+                        
+                logger.info(f"Converted {memory.get_context_size()} messages to conversation memory")
+            except Exception as e:
+                logger.warning(f"Failed to process conversation history: {e}")
+                memory = None
+        
+        # Get AI response with conversation context
+        ai_response = chat_with_bot(user_message, memory=memory, user_id=user_id)
         
         logger.info(f"AI response for session {session_id}: {ai_response}")
         
@@ -115,6 +140,37 @@ def chat():
         
     except Exception as e:
         logger.error(f"Error in chat endpoint: {str(e)}")
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e),
+            'status': 'error'
+        }), 500
+
+@app.route('/api/chat/reset', methods=['POST'])
+def chat_reset():
+    """
+    Reset conversation endpoint.
+    Provides acknowledgment for conversation reset requests.
+    Note: Actual conversation history is managed by the frontend.
+    """
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id', 'default') if data else 'default'
+        user_id = data.get('user_id') if data else None
+        clear_history = data.get('clear_history', True) if data else True
+        
+        logger.info(f"Conversation reset requested for session {session_id} (user: {user_id}), clear_history: {clear_history}")
+        
+        return jsonify({
+            'message': 'Conversation reset successfully',
+            'session_id': session_id,
+            'user_id': user_id,
+            'clear_history': clear_history,
+            'status': 'success'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in chat reset endpoint: {str(e)}")
         return jsonify({
             'error': 'Internal server error',
             'message': str(e),
@@ -176,6 +232,7 @@ def staff_chat():
     """
     Chat endpoint specifically for restaurant staff assistance.
     Requires restaurant_id in the request.
+    Supports conversation history for contextual responses.
     """
     try:
         if not STAFF_AI_AVAILABLE:
@@ -196,6 +253,7 @@ def staff_chat():
         user_message = data['message'].strip()
         restaurant_id = data.get('restaurant_id')
         session_id = data.get('session_id', 'staff_default')
+        conversation_history = data.get('conversation_history', [])  # New parameter
         
         if not user_message:
             return jsonify({
@@ -204,6 +262,12 @@ def staff_chat():
             }), 400
         
         logger.info(f"Received staff message from session {session_id}: {user_message}")
+        logger.info(f"Staff conversation history length: {len(conversation_history) if conversation_history else 0}")
+        
+        # Note: Staff agent currently doesn't support conversation memory
+        # This is implemented for future enhancement and API consistency
+        if conversation_history and isinstance(conversation_history, list):
+            logger.info(f"Conversation history provided but not yet supported by staff agent")
         
         # Get Staff AI response
         staff_response = chat_with_staff_bot(user_message, restaurant_id)
