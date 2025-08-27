@@ -15,7 +15,7 @@ AI_AVAILABLE = False
 STAFF_AI_AVAILABLE = False
 
 try:
-    from AI_Agent import chat_with_bot, getAllCuisineTypes
+    from AI_Agent import chat_with_bot, getAllCuisineTypes, create_conversation_memory
     AI_AVAILABLE = True
     logger.info("AI Agent imported successfully")
 except Exception as e:
@@ -23,7 +23,7 @@ except Exception as e:
     AI_AVAILABLE = False
 
 try:
-    from AI_Agent_Restaurant import chat_with_staff_bot
+    from AI_Agent_Restaurant import chat_with_staff_bot, create_staff_conversation_memory
     STAFF_AI_AVAILABLE = True
     logger.info("Restaurant Staff AI Agent imported successfully")
 except Exception as e:
@@ -264,13 +264,31 @@ def staff_chat():
         logger.info(f"Received staff message from session {session_id}: {user_message}")
         logger.info(f"Staff conversation history length: {len(conversation_history) if conversation_history else 0}")
         
-        # Note: Staff agent currently doesn't support conversation memory
-        # This is implemented for future enhancement and API consistency
+        # Convert conversation history to LangChain message format if provided
+        memory = None
         if conversation_history and isinstance(conversation_history, list):
-            logger.info(f"Conversation history provided but not yet supported by staff agent")
+            try:
+                from langchain_core.messages import HumanMessage, AIMessage
+                
+                memory = create_staff_conversation_memory(max_history=20)
+                
+                # Convert frontend message format to LangChain messages
+                for msg in conversation_history:
+                    if isinstance(msg, dict) and 'role' in msg and 'content' in msg:
+                        content = msg['content'].strip()
+                        if content:  # Only add non-empty messages
+                            if msg['role'] == 'user':
+                                memory.add_message(HumanMessage(content=content))
+                            elif msg['role'] == 'assistant':
+                                memory.add_message(AIMessage(content=content))
+                        
+                logger.info(f"Converted {memory.get_context_size()} messages to staff conversation memory")
+            except Exception as e:
+                logger.warning(f"Failed to process staff conversation history: {e}")
+                memory = None
         
-        # Get Staff AI response
-        staff_response = chat_with_staff_bot(user_message, restaurant_id)
+        # Get Staff AI response with conversation context
+        staff_response = chat_with_staff_bot(user_message, restaurant_id, memory=memory)
         
         logger.info(f"Staff AI response for session {session_id}: {staff_response}")
         

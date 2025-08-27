@@ -675,9 +675,40 @@ staff_graph.add_edge("tools", "staff_agent")
 # Compile the graph
 staff_app = staff_graph.compile()
 
-def chat_with_staff_bot(user_input: str, restaurant_id: str = None) -> str:
+# Conversation memory system for staff agent
+class StaffConversationMemory:
+    def __init__(self, max_history: int = 20):
+        """Initialize conversation memory with a maximum history limit."""
+        self.messages = []
+        self.max_history = max_history
+    
+    def add_message(self, message: BaseMessage):
+        """Add a message to the conversation history."""
+        self.messages.append(message)
+        # Keep only the most recent messages to prevent context overflow
+        if len(self.messages) > self.max_history:
+            self.messages = self.messages[-self.max_history:]
+    
+    def get_messages(self):
+        """Get all messages in the conversation history."""
+        return self.messages.copy()
+    
+    def clear(self):
+        """Clear the conversation history."""
+        self.messages.clear()
+    
+    def get_context_size(self) -> int:
+        """Get the number of messages in history."""
+        return len(self.messages)
+
+def create_staff_conversation_memory(max_history: int = 20):
+    """Create a new conversation memory instance for staff agent."""
+    return StaffConversationMemory(max_history)
+
+def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None) -> str:
     """
-    Function to chat with the restaurant staff bot. Each request is stateless.
+    Function to chat with the restaurant staff bot. 
+    Supports conversation memory for contextual responses.
     """
     try:
         # Enhance the user input with restaurant context if provided
@@ -686,8 +717,17 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None) -> str:
         else:
             enhanced_input = user_input
         
-        # Create a fresh state for each request
-        current_input = {"messages": [HumanMessage(content=enhanced_input)]}
+        # Create user message
+        user_message = HumanMessage(content=enhanced_input)
+        
+        # Build message list based on whether we have conversation memory
+        if memory:
+            # Use conversation history
+            history_messages = memory.get_messages()
+            current_input = {"messages": history_messages + [user_message]}
+        else:
+            # Stateless mode - just the current message
+            current_input = {"messages": [user_message]}
         
         # Run the staff agent
         result = staff_app.invoke(current_input)
@@ -704,7 +744,14 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None) -> str:
             
             # Check if the last AI message has content
             if last_ai_message.content and last_ai_message.content.strip():
-                return last_ai_message.content
+                final_response = last_ai_message.content
+                
+                # Save conversation to memory if provided
+                if memory:
+                    memory.add_message(user_message)
+                    memory.add_message(last_ai_message)
+                
+                return final_response
             
             # If no content but we have tool results, generate a response based on tool data
             # Collect tool outputs by name
@@ -864,7 +911,14 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None) -> str:
         # Fallback to last AI message content
         if ai_messages:
             last_ai_message = ai_messages[-1]
-            return last_ai_message.content or "I apologize, but I couldn't generate a proper response. Please try again."
+            final_response = last_ai_message.content or "I apologize, but I couldn't generate a proper response. Please try again."
+            
+            # Save conversation to memory if provided
+            if memory:
+                memory.add_message(user_message)
+                memory.add_message(last_ai_message)
+            
+            return final_response
         else:
             print("No AI messages found in result")
             return "Sorry, I couldn't process your request."
