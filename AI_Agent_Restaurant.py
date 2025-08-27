@@ -1,3 +1,28 @@
+"""
+Restaurant Staff AI Agent with Advanced Table Recommendation System
+
+This module provides an AI assistant specifically designed for restaurant staff operations.
+It includes sophisticated table recommendation capabilities using the RMS database's
+suggest_optimal_tables PostgreSQL function for intelligent table selection.
+
+Key Features:
+- Advanced table recommendations using database-level algorithms
+- Real-time availability checking with capacity optimization
+- Table combination validation for larger parties
+- Hourly availability reporting for operational planning
+- Customer history analysis and VIP recognition
+- Waitlist management and wait time estimation
+- Comprehensive booking and operational statistics
+
+New Advanced Tools:
+- getOptimalTableRecommendations: Uses suggest_optimal_tables database function
+- validateTableCombination: Validates table combinations using database logic
+- getTableAvailabilityReport: Generates hourly availability reports
+
+The agent follows a strict tool-based workflow pattern and maintains conversation
+context for enhanced staff interactions.
+"""
+
 from typing import TypedDict, Annotated, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
 from dotenv import load_dotenv
@@ -27,7 +52,14 @@ tools = []
 system_prompt = """
 You are an AI assistant specifically designed to help restaurant staff work more efficiently and provide better service. Your ONLY role is to:
 
-1. **Smart Table Assignment Helper**
+1. **Advanced Table Assignment Helper**
+   - Use the optimal table recommendation system for intelligent table selection
+   - Suggest single tables or combinations based on sophisticated algorithms
+   - Consider real-time availability, capacity matching, and priority scoring
+   - Validate table combinations before suggesting them to staff
+   - Generate hourly availability reports for better planning
+
+2. **Smart Table Assignment Helper (Legacy)**
    - Suggest optimal table assignments based on party size, customer preferences, and current occupancy
    - Recommend table combinations for larger parties
    - Consider customer history and preferences when suggesting tables
@@ -68,6 +100,7 @@ You are an AI assistant specifically designed to help restaurant staff work more
 - Focus on helping staff provide excellent customer service
 - NEVER call finishedUsingTools in the same response as data-gathering tools
 - Call finishedUsingTools only after you have processed tool results and are ready to give a final answer
+- For table recommendations, use BOTH getOptimalTableRecommendations (for smart suggestions) AND getAvailableTables (for complete alternatives) to give staff comprehensive options
 
 **RESPONSE STYLE:**
 - Be friendly but professional
@@ -77,9 +110,23 @@ You are an AI assistant specifically designed to help restaurant staff work more
 - Highlight important information (VIP customers, allergies, special occasions)
 - ALWAYS provide a clear, helpful response after using tools
 - When asked about booking counts, give specific numbers and helpful context
+- For table suggestions, explain why specific tables or combinations are recommended
+- **FOR TABLE RECOMMENDATIONS: Always show BOTH the optimal recommended tables AND list other available tables as alternatives**, giving staff complete options to choose from
+
+**TABLE RECOMMENDATION FORMAT EXAMPLE:**
+"For your party of 4, here are my recommendations:
+
+**🌟 RECOMMENDED TABLES (Optimal choices):**
+• Table 12 (4-seat booth) - Perfect size, quiet corner
+• Tables 5+6 combined (8 seats) - Popular combination for groups
+
+**📋 OTHER AVAILABLE TABLES:**
+• Table 8 (6-seat round) - Slightly larger but available
+• Table 15 (2-seat) + Table 16 (2-seat) - Alternative combination
+• Table 20 (8-seat) - Large table, good for celebrations"
 
 **WORKFLOW:**
-1. Use relevant tools to gather information (e.g., getTodaysBookings for booking questions)
+1. Use relevant tools to gather information (e.g., getOptimalTableRecommendations for table suggestions)
 2. Wait for tool results
 3. Call finishedUsingTools when ready to respond 
 4. Provide a natural language response with the information gathered
@@ -601,6 +648,232 @@ def estimateWaitTime(restaurant_id: str, party_size: int) -> str:
 
 tools.append(estimateWaitTime)
 
+@tool
+def getOptimalTableRecommendations(restaurant_id: str, party_size: int, booking_time: str = "now", turn_time_minutes: int = 120) -> str:
+    """
+    Get optimal table recommendations using the advanced RMS algorithm. 
+    This uses the suggest_optimal_tables database function for intelligent table selection.
+    booking_time can be:
+    - "now" or "current" for current time
+    - "19:00" for today at 7 PM 
+    - Full ISO format "2024-08-27T19:00:00"
+    """
+    print(f"Staff AI is getting optimal table recommendations for party of {party_size}")
+    try:
+        # Handle different time formats
+        if booking_time.lower() in ["now", "current", "right now"]:
+            start_time = datetime.now()
+        elif ":" in booking_time and "T" not in booking_time and len(booking_time) <= 5:
+            # Handle "19:00" format - assume today
+            today = date.today()
+            time_part = booking_time.strip()
+            if len(time_part.split(':')) == 2:
+                hour, minute = map(int, time_part.split(':'))
+                start_time = datetime.combine(today, dt_time(hour, minute))
+            else:
+                raise ValueError(f"Invalid time format: {booking_time}")
+        else:
+            # Handle full ISO format or other standard formats
+            start_time = datetime.fromisoformat(booking_time.replace('Z', '+00:00'))
+        
+        end_time = start_time + timedelta(minutes=turn_time_minutes)
+        
+        # Call the suggest_optimal_tables database function
+        result = supabase.rpc('suggest_optimal_tables', {
+            'p_restaurant_id': restaurant_id,
+            'p_party_size': party_size,
+            'p_start_time': start_time.isoformat(),
+            'p_end_time': end_time.isoformat()
+        }).execute()
+        
+        recommendations = result.data
+        
+        if not recommendations:
+            return json.dumps({
+                "status": "no_availability",
+                "message": "No suitable tables available for the requested time and party size",
+                "party_size": party_size,
+                "requested_time": booking_time
+            })
+        
+        # Get detailed table information for the recommended tables
+        recommendation = recommendations[0]  # Take the first (best) recommendation
+        table_ids = recommendation.get('table_ids', [])
+        total_capacity = recommendation.get('total_capacity', 0)
+        requires_combination = recommendation.get('requires_combination', False)
+        
+        # Fetch detailed table information
+        tables_info = []
+        if table_ids:
+            tables_result = supabase.table("restaurant_tables").select("""
+                id, table_number, table_type, capacity, min_capacity, max_capacity,
+                features, x_position, y_position, priority_score
+            """).in_("id", table_ids).execute()
+            
+            tables_info = tables_result.data
+        
+        # Format the recommendation response
+        recommendation_data = {
+            "status": "success",
+            "party_size": party_size,
+            "requested_time": booking_time,
+            "total_capacity": total_capacity,
+            "requires_combination": requires_combination,
+            "recommended_tables": tables_info,
+            "table_count": len(table_ids),
+            "algorithm_notes": {
+                "selection_method": "combination" if requires_combination else "single_table",
+                "optimization": "closest_capacity_match_with_priority_scoring"
+            }
+        }
+        
+        return json.dumps(recommendation_data)
+        
+    except Exception as e:
+        print(f"Error getting optimal table recommendations: {e}")
+        return f"Error getting optimal table recommendations: {str(e)}"
+
+tools.append(getOptimalTableRecommendations)
+
+@tool
+def getTableCombinationsNow(restaurant_id: str, party_size: int) -> str:
+    """
+    Get table combination recommendations for a party right now.
+    Specifically designed for immediate seating needs when staff say "right now" or "current".
+    """
+    print(f"Staff AI is getting immediate table combinations for party of {party_size}")
+    try:
+        # Use current time
+        current_time = datetime.now()
+        
+        # Call the suggest_optimal_tables database function
+        result = supabase.rpc('suggest_optimal_tables', {
+            'p_restaurant_id': restaurant_id,
+            'p_party_size': party_size,
+            'p_start_time': current_time.isoformat(),
+            'p_end_time': (current_time + timedelta(hours=2)).isoformat()
+        }).execute()
+        
+        recommendations = result.data
+        
+        if not recommendations:
+            return json.dumps({
+                "status": "no_availability",
+                "message": f"No suitable table combinations available right now for party of {party_size}",
+                "party_size": party_size,
+                "current_time": current_time.strftime("%H:%M")
+            })
+        
+        # Get detailed table information for the recommended tables
+        recommendation = recommendations[0]  # Take the first (best) recommendation
+        table_ids = recommendation.get('table_ids', [])
+        total_capacity = recommendation.get('total_capacity', 0)
+        requires_combination = recommendation.get('requires_combination', False)
+        
+        # Fetch detailed table information
+        tables_info = []
+        if table_ids:
+            tables_result = supabase.table("restaurant_tables").select("""
+                id, table_number, table_type, capacity, min_capacity, max_capacity,
+                features, x_position, y_position, priority_score
+            """).in_("id", table_ids).execute()
+            
+            tables_info = tables_result.data
+        
+        # Format the response specifically for immediate table combinations
+        response_data = {
+            "status": "success",
+            "party_size": party_size,
+            "current_time": current_time.strftime("%H:%M"),
+            "total_capacity": total_capacity,
+            "requires_combination": requires_combination,
+            "recommended_tables": tables_info,
+            "table_count": len(table_ids),
+            "immediate_setup": True,
+            "setup_instructions": f"Combine {len(table_ids)} tables" if requires_combination else f"Use single table {tables_info[0].get('table_number', '?') if tables_info else '?'}"
+        }
+        
+        return json.dumps(response_data)
+        
+    except Exception as e:
+        print(f"Error getting immediate table combinations: {e}")
+        return f"Error getting immediate table combinations: {str(e)}"
+
+tools.append(getTableCombinationsNow)
+
+@tool 
+def validateTableCombination(restaurant_id: str, table_ids: str, party_size: int) -> str:
+    """
+    Validate if a specific combination of tables is suitable for a party size.
+    Uses the validate_table_combination database function.
+    table_ids should be a comma-separated string of table IDs.
+    """
+    print(f"Staff AI is validating table combination: {table_ids}")
+    try:
+        # Convert comma-separated string to list
+        table_id_list = [id.strip() for id in table_ids.split(',') if id.strip()]
+        
+        # Call the validate_table_combination database function
+        result = supabase.rpc('validate_table_combination', {
+            'p_table_ids': table_id_list,
+            'p_party_size': party_size
+        }).execute()
+        
+        validation_result = result.data[0] if result.data else {}
+        
+        validation_data = {
+            "is_valid": validation_result.get('is_valid', False),
+            "total_capacity": validation_result.get('total_capacity', 0),
+            "validation_message": validation_result.get('validation_message', ''),
+            "table_ids": table_id_list,
+            "table_ids_input": table_ids,
+            "party_size": party_size
+        }
+        
+        return json.dumps(validation_data)
+        
+    except Exception as e:
+        print(f"Error validating table combination: {e}")
+        return f"Error validating table combination: {str(e)}"
+
+tools.append(validateTableCombination)
+
+@tool
+def getTableAvailabilityReport(restaurant_id: str, date: str) -> str:
+    """
+    Get hourly table availability report for a specific date.
+    Uses the get_table_availability_by_hour database function.
+    """
+    print(f"Staff AI is generating table availability report for {date}")
+    try:
+        # Call the get_table_availability_by_hour database function
+        result = supabase.rpc('get_table_availability_by_hour', {
+            'p_restaurant_id': restaurant_id,
+            'p_date': date
+        }).execute()
+        
+        hourly_data = result.data or []
+        
+        # Format the report
+        report = {
+            "restaurant_id": restaurant_id,
+            "date": date,
+            "hourly_availability": hourly_data,
+            "summary": {
+                "peak_hours": [h for h in hourly_data if h.get('utilization_percentage', 0) > 80],
+                "quiet_hours": [h for h in hourly_data if h.get('utilization_percentage', 0) < 30],
+                "total_hours_analyzed": len(hourly_data)
+            }
+        }
+        
+        return json.dumps(report)
+        
+    except Exception as e:
+        print(f"Error generating availability report: {e}")
+        return f"Error generating availability report: {str(e)}"
+
+tools.append(getTableAvailabilityReport)
+
 # Initialize the model
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash", 
@@ -811,7 +1084,54 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 3) Table suggestions
+            # 3) Optimal table recommendations (new advanced system)
+            optimal_rec_result = tool_results_by_name.get('getOptimalTableRecommendations')
+            if optimal_rec_result:
+                try:
+                    data = json.loads(optimal_rec_result)
+                    if data.get('status') == 'success':
+                        party = data.get('party_size')
+                        tables = data.get('recommended_tables', [])
+                        combo = data.get('requires_combination', False)
+                        capacity = data.get('total_capacity', 0)
+                        
+                        combo_text = " (table combination)" if combo else ""
+                        lines = [f"Optimal recommendation for party of {party}{combo_text}:"]
+                        for t in tables:
+                            lines.append(f"- Table {t.get('table_number', '?')} ({t.get('table_type', 'standard')}, seats {t.get('capacity', '?')})")
+                        lines.append(f"Total capacity: {capacity}")
+                        return "\n".join(lines).strip()
+                    else:
+                        return data.get('message', 'No suitable tables available')
+                except Exception:
+                    pass
+
+            # 3.5) Immediate table combinations (for "right now" requests)
+            immediate_combo_result = tool_results_by_name.get('getTableCombinationsNow')
+            if immediate_combo_result:
+                try:
+                    data = json.loads(immediate_combo_result)
+                    if data.get('status') == 'success':
+                        party = data.get('party_size')
+                        tables = data.get('recommended_tables', [])
+                        combo = data.get('requires_combination', False)
+                        capacity = data.get('total_capacity', 0)
+                        setup = data.get('setup_instructions', '')
+                        
+                        combo_text = " (table combination needed)" if combo else ""
+                        lines = [f"🔄 Immediate seating for party of {party}{combo_text}:"]
+                        for t in tables:
+                            lines.append(f"- Table {t.get('table_number', '?')} ({t.get('table_type', 'standard')}, seats {t.get('capacity', '?')})")
+                        lines.append(f"Total capacity: {capacity}")
+                        if setup:
+                            lines.append(f"Setup: {setup}")
+                        return "\n".join(lines).strip()
+                    else:
+                        return data.get('message', 'No suitable table combinations available right now')
+                except Exception:
+                    pass
+
+            # 4) Table suggestions (legacy system)
             suggestions_result = tool_results_by_name.get('getTableSuggestions')
             if suggestions_result:
                 try:
@@ -827,7 +1147,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 4) Customer history
+            # 5) Customer history
             history_result = tool_results_by_name.get('getCustomerHistory')
             if history_result:
                 try:
@@ -840,7 +1160,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 5) Booking details
+            # 6) Booking details
             booking_details_result = tool_results_by_name.get('checkBookingDetails')
             if booking_details_result:
                 try:
@@ -854,7 +1174,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 6) Restaurant stats
+            # 7) Restaurant stats
             stats_result = tool_results_by_name.get('getRestaurantStats')
             if stats_result:
                 try:
@@ -867,7 +1187,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 7) Waitlist entries
+            # 8) Waitlist entries
             waitlist_result = tool_results_by_name.get('getWaitlist')
             if waitlist_result:
                 try:
@@ -882,7 +1202,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 8) Waitlist stats
+            # 9) Waitlist stats
             waitlist_stats_result = tool_results_by_name.get('getWaitlistStats')
             if waitlist_stats_result:
                 try:
@@ -896,7 +1216,7 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                 except Exception:
                     pass
 
-            # 9) Wait time estimate
+            # 10) Wait time estimate
             wait_est_result = tool_results_by_name.get('estimateWaitTime')
             if wait_est_result:
                 try:
@@ -905,6 +1225,43 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None)
                     size = data.get('party_size')
                     if est is not None:
                         return f"Estimated wait for party of {size}: ~{est} minutes."
+                except Exception:
+                    pass
+
+            # 11) Table combination validation
+            validation_result = tool_results_by_name.get('validateTableCombination')
+            if validation_result:
+                try:
+                    data = json.loads(validation_result)
+                    is_valid = data.get('is_valid', False)
+                    capacity = data.get('total_capacity', 0)
+                    message = data.get('validation_message', '')
+                    party_size = data.get('party_size', 0)
+                    valid_text = "✅ Valid" if is_valid else "❌ Invalid"
+                    return f"{valid_text} table combination for party of {party_size}. Total capacity: {capacity}. {message}"
+                except Exception:
+                    pass
+
+            # 12) Availability report
+            report_result = tool_results_by_name.get('getTableAvailabilityReport')
+            if report_result:
+                try:
+                    data = json.loads(report_result)
+                    date = data.get('date', 'Unknown date')
+                    hourly = data.get('hourly_availability', [])
+                    summary = data.get('summary', {})
+                    peak_hours = summary.get('peak_hours', [])
+                    quiet_hours = summary.get('quiet_hours', [])
+                    
+                    lines = [f"Table availability report for {date}:"]
+                    if peak_hours:
+                        peak_times = [f"{h.get('hour', '?')}:00" for h in peak_hours[:3]]
+                        lines.append(f"Peak hours: {', '.join(peak_times)}")
+                    if quiet_hours:
+                        quiet_times = [f"{h.get('hour', '?')}:00" for h in quiet_hours[:3]]
+                        lines.append(f"Quiet hours: {', '.join(quiet_times)}")
+                    
+                    return "\n".join(lines).strip()
                 except Exception:
                     pass
         

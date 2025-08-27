@@ -137,14 +137,15 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
 AVAILABILITY_TZ=Asia/Beirut  # For table availability calculations
 ```
 
-### Testing Conversation Memory
-Use these patterns to test contextual conversations:
-```python
-# Customer flow
-"Hi, I need restaurant recommendations" 
-→ "Italian food please" (remembers context)
-→ "Outdoor seating would be great" (builds on Italian cuisine preference)
-→ "What about the first one you mentioned?" (references previous suggestions)
+### Testing Advanced Table Recommendations
+Use this test pattern for the new table recommendation system:
+```bash
+# Test advanced table recommendation tools
+python test_optimal_recommendations.py
+
+# Interactive testing with new tools
+python AI_Agent_Restaurant.py
+# Then ask: "What's the best table for a party of 4 at 7 PM?"
 ```
 
 ## Key Tools by Agent
@@ -156,10 +157,47 @@ Use these patterns to test contextual conversations:
 - `convertRelativeDate(relative_date)` - Handle "today", "tomorrow" for availability queries
 
 ### Staff Agent (`AI_Agent_Restaurant.py`)  
+
+#### Core Operations
 - `getTodaysBookings(restaurant_id)` - Today's reservations with customer data
 - `getAvailableTables(restaurant_id, time, party_size)` - Smart table availability
 - `getCustomerHistory(identifier, restaurant_id)` - Customer preferences & history
+
+#### Legacy Table Recommendations
 - `getTableSuggestions(restaurant_id, party_size, preferences)` - AI-powered seating recommendations
+
+#### **Advanced Table Recommendation System (NEW)**
+- `getOptimalTableRecommendations(restaurant_id, party_size, booking_time, turn_time)` - **Primary tool for table recommendations using RMS database's suggest_optimal_tables function**
+  - Uses sophisticated database-level algorithms
+  - Real-time availability checking with capacity optimization  
+  - Automatic table combination suggestions for larger parties
+  - Priority scoring and closest capacity matching
+- `validateTableCombination(table_ids, party_size)` - Validates table combinations using database business rules
+- `getTableAvailabilityReport(restaurant_id, date)` - Generates hourly availability reports for operational planning
+
+#### **Enhanced Table Display (LATEST UPDATE)**
+**System prompt now instructs AI to show BOTH recommended and alternative tables:**
+- Uses `getOptimalTableRecommendations()` for smart suggestions  
+- Uses `getAvailableTables()` for complete alternatives
+- Presents results in structured format:
+  ```
+  RECOMMENDED TABLES (Optimal choices):
+  • Table 12 (4-seat booth) - Perfect size, quiet corner
+  
+  OTHER AVAILABLE TABLES:
+  • Table 8 (6-seat round) - Slightly larger but available
+  • Table 20 (8-seat) - Large table, good for celebrations
+  ```
+- Provides staff complete flexibility and transparency in table selection
+
+#### Waitlist Management
+- `getWaitlist(restaurant_id, status)` - Current waitlist entries
+- `getWaitlistStats(restaurant_id)` - Waitlist summary statistics
+- `estimateWaitTime(restaurant_id, party_size)` - Wait time estimates
+
+#### Analytics & Reporting  
+- `getRestaurantStats(restaurant_id, date_filter)` - Operational statistics
+- `checkBookingDetails(confirmation_code, booking_id)` - Detailed booking information
 
 ## Error Handling & Graceful Degradation
 ```python
