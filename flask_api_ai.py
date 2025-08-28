@@ -33,6 +33,7 @@ def after_request(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'none'; object-src 'none';"
     return response
 
 # Simple request validation
@@ -77,11 +78,18 @@ def require_valid_request(f):
 # Rate limit error handler
 @app.errorhandler(429)
 def ratelimit_handler(e):
-    return jsonify({
+    response = jsonify({
         'error': 'Rate limit exceeded',
         'message': 'Too many requests. Please wait before making another request.',
         'status': 'error'
-    }), 429
+    })
+    
+    # Add rate limit headers for frontend handling
+    response.headers['Retry-After'] = '60'  # Suggest retry after 60 seconds
+    response.headers['X-RateLimit-Limit'] = getattr(e.description, 'limit', 'unknown')
+    response.headers['X-RateLimit-Remaining'] = '0'
+    
+    return response, 429
 
 # Try to import AI functionality with graceful fallback
 AI_AVAILABLE = False
@@ -424,17 +432,29 @@ def admin_stats():
         }), 401
     
     try:
-        # Return basic stats
+        # Get current time for stats
+        from datetime import datetime
+        current_time = datetime.utcnow().isoformat()
+        
+        # Return enhanced stats
         return jsonify({
             'status': 'healthy',
             'ai_available': AI_AVAILABLE,
             'staff_ai_available': STAFF_AI_AVAILABLE,
+            'timestamp': current_time,
             'message': 'Admin stats endpoint',
             'rate_limits': {
                 'default': "200 per day, 50 per hour",
                 'chat': "30 per minute",
                 'staff_chat': "50 per minute",
-                'cuisines': "10 per minute"
+                'cuisines': "10 per minute",
+                'admin': "5 per minute"
+            },
+            'security_features': {
+                'request_validation': True,
+                'security_headers': True,
+                'request_logging': True,
+                'admin_protection': True
             }
         }), 200
         
