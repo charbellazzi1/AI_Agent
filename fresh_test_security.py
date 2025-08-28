@@ -7,8 +7,8 @@ import requests
 import time
 import json
 
-# Configuration
-BASE_URL = "https://restoai-mm2zlj8bq-charbels-projects-87309710.vercel.app"
+# Configuration - Updated to current production URL
+BASE_URL = "https://restoai-ovkk14wn7-charbels-projects-87309710.vercel.app"
 
 def test_health_check():
     """Test that health check works and is not rate limited"""
