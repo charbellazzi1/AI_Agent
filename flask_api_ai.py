@@ -388,6 +388,7 @@ def staff_chat():
         }), 500
 
 @app.route('/api/test', methods=['POST'])
+@require_valid_request
 def test_endpoint():
     """Test endpoint for debugging purposes."""
     try:

@@ -9,8 +9,8 @@ import time
 import json
 
 # Configuration
-BASE_URL = "https://restoai-sigma.vercel.app"
-# For local testing: BASE_URL = "http://localhost:5000"
+BASE_URL = "http://localhost:5000"
+# For production: BASE_URL = "https://restoai-bpdtuus3p-charbels-projects-87309710.vercel.app/"
 
 def test_health_check():
     """Test that health check works and is not rate limited"""
@@ -27,16 +27,16 @@ def test_health_check():
     return False
 
 def test_rate_limiting():
-    """Test rate limiting on chat endpoint"""
+    """Test rate limiting on cuisine endpoint (cheaper than chat)"""
     print("\nTesting rate limiting...")
-    print("Making multiple requests to trigger rate limit...")
+    print("Making multiple requests to /api/restaurants/cuisines to trigger rate limit...")
     
     # Make requests quickly to trigger rate limit
-    for i in range(35):  # Chat limit is 30 per minute
+    # Cuisine endpoint has "10 per minute" limit, so try 15 requests
+    for i in range(15):  
         try:
-            response = requests.post(
-                f"{BASE_URL}/api/chat",
-                json={"message": f"test message {i}"},
+            response = requests.get(
+                f"{BASE_URL}/api/restaurants/cuisines",
                 headers={"User-Agent": "TestClient/1.0"}
             )
             print(f"Request {i+1}: Status {response.status_code}")
@@ -60,10 +60,10 @@ def test_request_validation():
     """Test request validation with suspicious User-Agent"""
     print("\nTesting request validation...")
     
-    # Test with suspicious User-Agent
+    # Test with suspicious User-Agent on a cheaper endpoint
     try:
         response = requests.post(
-            f"{BASE_URL}/api/chat",
+            f"{BASE_URL}/api/test",
             json={"message": "test"},
             headers={"User-Agent": "SuspiciousBot/1.0"}
         )
