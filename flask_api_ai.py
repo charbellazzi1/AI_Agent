@@ -116,7 +116,7 @@ except Exception as e:
 def home():
     return jsonify({
         'status': 'healthy',
-        'message': 'Restaurant AI Agent API is running',
+        'message': 'Restaurant AI Agent API is running - v2.0',
         'ai_available': AI_AVAILABLE,
         'staff_ai_available': STAFF_AI_AVAILABLE,
         'environment_check': {
