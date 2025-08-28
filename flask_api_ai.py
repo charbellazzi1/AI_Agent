@@ -1,14 +1,87 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import os
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize rate limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://",
+)
+
+# Request logging middleware
+@app.before_request
+def log_request_info():
+    """Log basic request information for monitoring"""
+    logger.info(f'Request: {request.method} {request.path} from {request.remote_addr} - User-Agent: {request.headers.get("User-Agent", "Unknown")}')
+
+# Security headers middleware
+@app.after_request
+def after_request(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
+
+# Simple request validation
+def validate_request():
+    """Simple validation to ensure requests come from expected sources"""
+    user_agent = request.headers.get('User-Agent', '')
+    referer = request.headers.get('Referer', '')
+    
+    # Allow requests from known frontends or mobile apps
+    allowed_patterns = [
+        'expo',  # Expo/React Native apps
+        'okhttp',  # Android apps
+        'CFNetwork',  # iOS apps
+        'chrome',  # Web browsers
+        'firefox',
+        'safari',
+        'edge'
+    ]
+    
+    # Check if request comes from a reasonable source
+    if any(pattern.lower() in user_agent.lower() for pattern in allowed_patterns):
+        return True
+    
+    # Allow requests with no user agent (for development/testing)
+    if not user_agent:
+        return True
+        
+    return False
+
+def require_valid_request(f):
+    """Decorator to validate requests"""
+    def decorated_function(*args, **kwargs):
+        if not validate_request():
+            return jsonify({
+                'error': 'Invalid request source',
+                'status': 'error'
+            }), 403
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+# Rate limit error handler
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return jsonify({
+        'error': 'Rate limit exceeded',
+        'message': 'Too many requests. Please wait before making another request.',
+        'status': 'error'
+    }), 429
 
 # Try to import AI functionality with graceful fallback
 AI_AVAILABLE = False
@@ -31,6 +104,7 @@ except Exception as e:
     STAFF_AI_AVAILABLE = False
 
 @app.route('/', methods=['GET'])
+@limiter.exempt  # Exempt home page from rate limiting
 def home():
     return jsonify({
         'status': 'healthy',
@@ -45,6 +119,7 @@ def home():
     }), 200
 
 @app.route('/api/health', methods=['GET'])
+@limiter.exempt  # Exempt health checks from rate limiting
 def health_check():
     """Health check endpoint."""
     return jsonify({
@@ -55,6 +130,8 @@ def health_check():
     }), 200
 
 @app.route('/api/chat', methods=['POST'])
+@limiter.limit("30 per minute")  # Allow 30 chat requests per minute per IP
+@require_valid_request
 def chat():
     """
     Main chat endpoint to send messages to the AI agent.
@@ -178,6 +255,7 @@ def chat_reset():
         }), 500
 
 @app.route('/api/restaurants/cuisines', methods=['GET'])
+@limiter.limit("10 per minute")  # Lower limit for cuisine endpoint
 def get_cuisine_types():
     """Get all available cuisine types."""
     try:
@@ -228,6 +306,8 @@ def get_cuisine_types():
         }), 500
 
 @app.route('/api/staff/chat', methods=['POST'])
+@limiter.limit("50 per minute")  # Allow more requests for staff
+@require_valid_request
 def staff_chat():
     """
     Chat endpoint specifically for restaurant staff assistance.
@@ -323,6 +403,42 @@ def test_endpoint():
         
     except Exception as e:
         logger.error(f"Error in test endpoint: {str(e)}")
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e),
+            'status': 'error'
+        }), 500
+
+@app.route('/api/admin/stats', methods=['GET'])
+@limiter.limit("5 per minute")
+def admin_stats():
+    """Simple admin endpoint to get basic stats - protect this in production"""
+    admin_key = request.headers.get('X-Admin-Key')
+    expected_key = os.getenv('ADMIN_KEY', 'admin123')  # Change this in production
+    
+    if admin_key != expected_key:
+        return jsonify({
+            'error': 'Unauthorized',
+            'status': 'error'
+        }), 401
+    
+    try:
+        # Return basic stats
+        return jsonify({
+            'status': 'healthy',
+            'ai_available': AI_AVAILABLE,
+            'staff_ai_available': STAFF_AI_AVAILABLE,
+            'message': 'Admin stats endpoint',
+            'rate_limits': {
+                'default': "200 per day, 50 per hour",
+                'chat': "30 per minute",
+                'staff_chat': "50 per minute",
+                'cuisines': "10 per minute"
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in admin stats endpoint: {str(e)}")
         return jsonify({
             'error': 'Internal server error',
             'message': str(e),
