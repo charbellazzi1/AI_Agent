@@ -1,0 +1,16 @@
+restaurant_agent.log
+__pycache__/
+.env
+.venv/
+.vscode/
+.vercel
+
+# Test and debug files
+test_*.py
+debug_*.py
+check_*.py
+*_test.py
+simple_*.py
+jwt_token.txt
+create_test_*.py
+setup_*.py

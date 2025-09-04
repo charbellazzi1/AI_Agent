@@ -150,7 +150,6 @@ tools.append(finishedUsingTools)
 @tool
 def getTodaysBookings(restaurant_id: str) -> str:
     """Get all bookings for today for a specific restaurant"""
-    print(f"Staff AI is getting today's bookings for restaurant: {restaurant_id}")
     try:
         today = date.today()
         start_of_day = datetime.combine(today, dt_time.min)
@@ -167,10 +166,8 @@ def getTodaysBookings(restaurant_id: str) -> str:
         if not bookings:
             return "No bookings found for today"
         
-        print(f"Found {len(bookings)} bookings for today")
         return json.dumps(bookings)
     except Exception as e:
-        print(f"Error fetching today's bookings: {e}")
         return f"Error retrieving today's bookings: {str(e)}"
 
 tools.append(getTodaysBookings)
@@ -992,52 +989,54 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None,
     Now supports authenticated Supabase client for RLS compliance.
     """
     try:
-        # Set up thread-local storage for authenticated client
-        import threading
+        # Store original global client and replace with authenticated one if provided
+        global supabase
+        original_client = supabase
         if authenticated_client:
-            threading.current_thread().supabase_client = authenticated_client
+            supabase = authenticated_client
         
-        # Enhance the user input with restaurant context if provided
-        if restaurant_id:
-            enhanced_input = f"[Restaurant ID: {restaurant_id}] {user_input}"
-        else:
-            enhanced_input = user_input
-        
-        # Create user message
-        user_message = HumanMessage(content=enhanced_input)
-        
-        # Build message list based on whether we have conversation memory
-        if memory:
-            # Use conversation history
-            history_messages = memory.get_messages()
-            current_input = {"messages": history_messages + [user_message]}
-        else:
-            # Stateless mode - just the current message
-            current_input = {"messages": [user_message]}
-        
-        # Run the staff agent
-        result = staff_app.invoke(current_input)
-        
-        # Look for AI messages and tool results
-        ai_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
-        tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
-        
-        print(f"Found {len(ai_messages)} AI messages and {len(tool_messages)} tool messages")
-        
-        # If we have tool results but no proper AI response, create one
-        if tool_messages and ai_messages:
-            last_ai_message = ai_messages[-1]
+        try:
+            # Enhance the user input with restaurant context if provided
+            if restaurant_id:
+                enhanced_input = f"[Restaurant ID: {restaurant_id}] {user_input}"
+            else:
+                enhanced_input = user_input
             
-            # Check if the last AI message has content
-            if last_ai_message.content and last_ai_message.content.strip():
-                final_response = last_ai_message.content
+            # Create user message
+            user_message = HumanMessage(content=enhanced_input)
+            
+            # Build message list based on whether we have conversation memory
+            if memory:
+                # Use conversation history
+                history_messages = memory.get_messages()
+                current_input = {"messages": history_messages + [user_message]}
+            else:
+                # Stateless mode - just the current message
+                current_input = {"messages": [user_message]}
+            
+            # Run the staff agent
+            result = staff_app.invoke(current_input)
+            
+            # Look for AI messages and tool results
+            ai_messages = [msg for msg in result["messages"] if isinstance(msg, AIMessage)]
+            tool_messages = [msg for msg in result["messages"] if isinstance(msg, ToolMessage)]
+            
+            print(f"Found {len(ai_messages)} AI messages and {len(tool_messages)} tool messages")
+            
+            # If we have tool results but no proper AI response, create one
+            if tool_messages and ai_messages:
+                last_ai_message = ai_messages[-1]
                 
-                # Save conversation to memory if provided
-                if memory:
-                    memory.add_message(user_message)
-                    memory.add_message(last_ai_message)
-                
-                return final_response
+                # Check if the last AI message has content
+                if last_ai_message.content and last_ai_message.content.strip():
+                    final_response = last_ai_message.content
+                    
+                    # Save conversation to memory if provided
+                    if memory:
+                        memory.add_message(user_message)
+                        memory.add_message(last_ai_message)
+                    
+                    return final_response
             
             # If no content but we have tool results, generate a response based on tool data
             # Collect tool outputs by name
@@ -1277,23 +1276,30 @@ def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None,
                     return "\n".join(lines).strip()
                 except Exception:
                     pass
-        
-        # Fallback to last AI message content
-        if ai_messages:
-            last_ai_message = ai_messages[-1]
-            final_response = last_ai_message.content or "I apologize, but I couldn't generate a proper response. Please try again."
             
-            # Save conversation to memory if provided
-            if memory:
-                memory.add_message(user_message)
-                memory.add_message(last_ai_message)
-            
-            return final_response
-        else:
-            print("No AI messages found in result")
-            return "Sorry, I couldn't process your request."
+            # Fallback to last AI message content
+            if ai_messages:
+                last_ai_message = ai_messages[-1]
+                final_response = last_ai_message.content or "I apologize, but I couldn't generate a proper response. Please try again."
+                
+                # Save conversation to memory if provided
+                if memory:
+                    memory.add_message(user_message)
+                    memory.add_message(last_ai_message)
+                
+                return final_response
+            else:
+                print("No AI messages found in result")
+                return "Sorry, I couldn't process your request."
+                
+        finally:
+            # Always restore the original client
+            supabase = original_client
             
     except Exception as e:
+        # Ensure we restore the original client even if there's an error
+        if 'original_client' in locals():
+            supabase = original_client
         print(f"Error running staff agent: {e}")
         return f"Sorry, I encountered an error: {str(e)}"
 

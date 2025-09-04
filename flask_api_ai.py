@@ -52,7 +52,9 @@ def create_authenticated_supabase_client(jwt_token):
             
         # Create client with user JWT token
         client = create_client(url, key)
-        client.auth.set_session(jwt_token, None)  # Set the JWT token
+        
+        # Set JWT token in headers for authenticated requests
+        client.postgrest.auth(jwt_token)
         
         return client
     except Exception as e:
