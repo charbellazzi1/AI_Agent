@@ -4,6 +4,9 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import os
 import logging
+import jwt
+from supabase import create_client, Client
+from functools import wraps
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,6 +38,61 @@ def after_request(response):
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'none'; object-src 'none';"
     return response
+
+# Authentication helper functions
+def create_authenticated_supabase_client(jwt_token):
+    """Create a Supabase client with user authentication"""
+    try:
+        url = os.getenv("EXPO_PUBLIC_SUPABASE_URL")
+        key = os.getenv("EXPO_PUBLIC_SUPABASE_ANON_KEY")
+        
+        if not url or not key:
+            logger.error("Missing Supabase environment variables")
+            return None
+            
+        # Create client with user JWT token
+        client = create_client(url, key)
+        client.auth.set_session(jwt_token, None)  # Set the JWT token
+        
+        return client
+    except Exception as e:
+        logger.error(f"Failed to create authenticated Supabase client: {e}")
+        return None
+
+def extract_jwt_token():
+    """Extract JWT token from Authorization header"""
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        return auth_header.split(' ')[1]
+    return None
+
+def get_user_from_token(jwt_token):
+    """Extract user info from JWT token (without verification for now)"""
+    try:
+        # For Supabase, we'll let the client handle token validation
+        # The token format contains user info we can extract
+        import base64
+        import json
+        
+        # Split JWT to get payload
+        parts = jwt_token.split('.')
+        if len(parts) != 3:
+            return None
+            
+        # Decode payload (add padding if needed)
+        payload = parts[1]
+        payload += '=' * (4 - len(payload) % 4)  # Add padding
+        decoded = base64.b64decode(payload)
+        user_data = json.loads(decoded)
+        
+        return {
+            'id': user_data.get('sub'),
+            'email': user_data.get('email'),
+            'role': user_data.get('role', 'authenticated')
+        }
+    except Exception as e:
+        logger.warning(f"Failed to extract user from token: {e}")
+        return None
 
 # Simple request validation
 def validate_request():
@@ -144,6 +202,7 @@ def chat():
     """
     Main chat endpoint to send messages to the AI agent.
     Supports conversation history for contextual responses.
+    Now supports authenticated users with RLS.
     """
     try:
         if not AI_AVAILABLE:
@@ -172,6 +231,21 @@ def chat():
                 'status': 'error'
             }), 400
         
+        # Extract JWT token and create authenticated client
+        jwt_token = extract_jwt_token()
+        authenticated_client = None
+        current_user = None
+        
+        if jwt_token:
+            authenticated_client = create_authenticated_supabase_client(jwt_token)
+            current_user = get_user_from_token(jwt_token)
+            if current_user:
+                logger.info(f"Authenticated request from user {current_user['id']} (email: {current_user.get('email', 'unknown')})")
+            else:
+                logger.warning("JWT token present but user extraction failed")
+        else:
+            logger.info("No JWT token provided, using anonymous access")
+        
         logger.info(f"Received message from session {session_id} (user: {user_id}): {user_message}")
         logger.info(f"Conversation history length: {len(conversation_history) if conversation_history else 0}")
         
@@ -199,8 +273,14 @@ def chat():
                 logger.warning(f"Failed to process conversation history: {e}")
                 memory = None
         
-        # Get AI response with conversation context
-        ai_response = chat_with_bot(user_message, memory=memory, user_id=user_id)
+        # Get AI response with conversation context and authentication
+        ai_response = chat_with_bot(
+            user_message, 
+            memory=memory, 
+            user_id=user_id,
+            authenticated_client=authenticated_client,
+            current_user=current_user
+        )
         
         logger.info(f"AI response for session {session_id}: {ai_response}")
         
@@ -220,6 +300,7 @@ def chat():
             'restaurants_to_show': restaurants_to_show,
             'session_id': session_id,
             'user_id': user_id,
+            'authenticated': jwt_token is not None,
             'status': 'success'
         }), 200
         
@@ -321,6 +402,7 @@ def staff_chat():
     Chat endpoint specifically for restaurant staff assistance.
     Requires restaurant_id in the request.
     Supports conversation history for contextual responses.
+    Now supports authenticated staff with RLS.
     """
     try:
         if not STAFF_AI_AVAILABLE:
@@ -341,6 +423,7 @@ def staff_chat():
         user_message = data['message'].strip()
         restaurant_id = data.get('restaurant_id')
         session_id = data.get('session_id', 'staff_default')
+        user_id = data.get('user_id')  # Staff user ID
         conversation_history = data.get('conversation_history', [])  # New parameter
         
         if not user_message:
@@ -348,6 +431,21 @@ def staff_chat():
                 'error': 'Message cannot be empty',
                 'status': 'error'
             }), 400
+        
+        # Extract JWT token and create authenticated client
+        jwt_token = extract_jwt_token()
+        authenticated_client = None
+        current_user = None
+        
+        if jwt_token:
+            authenticated_client = create_authenticated_supabase_client(jwt_token)
+            current_user = get_user_from_token(jwt_token)
+            if current_user:
+                logger.info(f"Authenticated staff request from user {current_user['id']} (email: {current_user.get('email', 'unknown')})")
+            else:
+                logger.warning("JWT token present but user extraction failed")
+        else:
+            logger.info("No JWT token provided for staff request")
         
         logger.info(f"Received staff message from session {session_id}: {user_message}")
         logger.info(f"Staff conversation history length: {len(conversation_history) if conversation_history else 0}")
@@ -375,8 +473,14 @@ def staff_chat():
                 logger.warning(f"Failed to process staff conversation history: {e}")
                 memory = None
         
-        # Get Staff AI response with conversation context
-        staff_response = chat_with_staff_bot(user_message, restaurant_id, memory=memory)
+        # Get Staff AI response with conversation context and authentication
+        staff_response = chat_with_staff_bot(
+            user_message, 
+            restaurant_id, 
+            memory=memory,
+            authenticated_client=authenticated_client,
+            current_user=current_user
+        )
         
         logger.info(f"Staff AI response for session {session_id}: {staff_response}")
         
@@ -384,6 +488,8 @@ def staff_chat():
             'response': staff_response,
             'session_id': session_id,
             'restaurant_id': restaurant_id,
+            'user_id': user_id,
+            'authenticated': jwt_token is not None,
             'status': 'success'
         }), 200
         

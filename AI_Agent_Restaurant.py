@@ -23,7 +23,7 @@ The agent follows a strict tool-based workflow pattern and maintains conversatio
 context for enhanced staff interactions.
 """
 
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict, Annotated, Sequence, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -42,6 +42,13 @@ url: str = os.environ.get("EXPO_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("EXPO_PUBLIC_SUPABASE_ANON_KEY")
 
 supabase: Client = create_client(url, key)
+
+def get_supabase_client() -> Optional[Client]:
+    """Get the appropriate Supabase client (authenticated if available, otherwise global)"""
+    import threading
+    if hasattr(threading.current_thread(), 'supabase_client'):
+        return threading.current_thread().supabase_client
+    return supabase
 
 class StaffAgentState(TypedDict):
     """State of the restaurant staff agent."""
@@ -149,7 +156,7 @@ def getTodaysBookings(restaurant_id: str) -> str:
         start_of_day = datetime.combine(today, dt_time.min)
         end_of_day = datetime.combine(today, dt_time.max)
         
-        result = supabase.table("bookings").select("""
+        result = get_supabase_client().table("bookings").select("""
             id, user_id, booking_time, party_size, status, special_requests, 
             occasion, dietary_notes, guest_name, guest_email, guest_phone,
             confirmation_code, checked_in_at, seated_at, 
@@ -174,7 +181,7 @@ def getAvailableTables(restaurant_id: str, desired_time: str = None, party_size:
     print(f"Staff AI is checking available tables for restaurant: {restaurant_id}")
     try:
         # Get all tables for the restaurant
-        tables_result = supabase.table("restaurant_tables").select("""
+        tables_result = get_supabase_client().table("restaurant_tables").select("""
             id, table_number, table_type, capacity, min_capacity, max_capacity, 
             features, is_active, x_position, y_position
         """).eq("restaurant_id", restaurant_id).eq("is_active", True).order("table_number").execute()
@@ -190,7 +197,7 @@ def getAvailableTables(restaurant_id: str, desired_time: str = None, party_size:
             start_time = booking_time - timedelta(hours=2)  # 2 hour window before
             end_time = booking_time + timedelta(hours=2)    # 2 hour window after
             
-            bookings_result = supabase.table("bookings").select("""
+            bookings_result = get_supabase_client().table("bookings").select("""
                 id, booking_time, party_size, status, booking_tables(table_id)
             """).eq("restaurant_id", restaurant_id).gte("booking_time", start_time.isoformat()).lte("booking_time", end_time.isoformat()).in_("status", ["confirmed", "seated", "arrived"]).execute()
             
@@ -232,7 +239,7 @@ def getCustomerHistory(customer_identifier: str, restaurant_id: str) -> str:
     print(f"Staff AI is looking up customer history: {customer_identifier}")
     try:
         # First try to find customer by different identifiers
-        customer_query = supabase.table("restaurant_customers").select("""
+        customer_query = get_supabase_client().table("restaurant_customers").select("""
             id, user_id, guest_email, guest_phone, guest_name, total_bookings,
             total_spent, average_party_size, last_visit, first_visit, 
             no_show_count, cancelled_count, vip_status, preferred_table_types,
@@ -257,7 +264,7 @@ def getCustomerHistory(customer_identifier: str, restaurant_id: str) -> str:
         customer = customers[0]  # Take first match
         
         # Get recent bookings for this customer
-        recent_bookings = supabase.table("bookings").select("""
+        recent_bookings = get_supabase_client().table("bookings").select("""
             id, booking_time, party_size, status, special_requests, occasion,
             dietary_notes, confirmation_code
         """).eq("restaurant_id", restaurant_id).or_(
@@ -265,7 +272,7 @@ def getCustomerHistory(customer_identifier: str, restaurant_id: str) -> str:
         ).order("booking_time", desc=True).limit(5).execute()
         
         # Get customer notes if any
-        notes_result = supabase.table("customer_notes").select("""
+        notes_result = get_supabase_client().table("customer_notes").select("""
             note, category, is_important, created_at
         """).eq("customer_id", customer["id"]).order("created_at", desc=True).execute()
         
@@ -296,7 +303,7 @@ def getTableSuggestions(restaurant_id: str, party_size: int, customer_preference
     print(f"Staff AI is suggesting tables for party of {party_size}")
     try:
         # Get available tables
-        tables_result = supabase.table("restaurant_tables").select("""
+        tables_result = get_supabase_client().table("restaurant_tables").select("""
             id, table_number, table_type, capacity, min_capacity, max_capacity,
             features, x_position, y_position, priority_score
         """).eq("restaurant_id", restaurant_id).eq("is_active", True).execute()
@@ -355,7 +362,7 @@ def getTableSuggestions(restaurant_id: str, party_size: int, customer_preference
         # Also check for table combinations if no perfect match
         combinations = []
         if party_size > max(table["max_capacity"] for table in tables):
-            combo_result = supabase.table("table_combinations").select("""
+            combo_result = get_supabase_client().table("table_combinations").select("""
                 id, primary_table_id, secondary_table_id, combined_capacity,
                 restaurant_tables!primary_table_id(table_number, table_type),
                 restaurant_tables!secondary_table_id(table_number, table_type)
@@ -400,7 +407,7 @@ def getRestaurantStats(restaurant_id: str, date_filter: str = "today") -> str:
             end_date = datetime.combine(today, dt_time.max)
         
         # Get booking statistics
-        bookings_result = supabase.table("bookings").select("""
+        bookings_result = get_supabase_client().table("bookings").select("""
             id, booking_time, party_size, status, created_at
         """).eq("restaurant_id", restaurant_id).gte("booking_time", start_date.isoformat()).lte("booking_time", end_date.isoformat()).execute()
         
@@ -457,7 +464,7 @@ def checkBookingDetails(confirmation_code: str = None, booking_id: str = None) -
     """Get detailed information about a specific booking using confirmation code or booking ID"""
     print(f"Staff AI is checking booking details")
     try:
-        query = supabase.table("bookings").select("""
+        query = get_supabase_client().table("bookings").select("""
             id, user_id, booking_time, party_size, status, special_requests,
             occasion, dietary_notes, guest_name, guest_email, guest_phone,
             confirmation_code, checked_in_at, seated_at, turn_time_minutes,
@@ -483,7 +490,7 @@ def checkBookingDetails(confirmation_code: str = None, booking_id: str = None) -
         # Get customer notes if user_id exists
         customer_notes = []
         if booking.get("user_id"):
-            notes_result = supabase.table("customer_notes").select("""
+            notes_result = get_supabase_client().table("customer_notes").select("""
                 note, category, is_important, created_at
             """).eq("customer_id", booking["user_id"]).order("created_at", desc=True).limit(3).execute()
             customer_notes = notes_result.data
@@ -557,7 +564,7 @@ def getWaitlistStats(restaurant_id: str) -> str:
                 .execute()
             )
         except Exception:
-            result = supabase.table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
+            result = get_supabase_client().table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
 
         entries = result.data or []
 
@@ -619,7 +626,7 @@ def estimateWaitTime(restaurant_id: str, party_size: int) -> str:
                 .execute()
             )
         except Exception:
-            wl_result = supabase.table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
+            wl_result = get_supabase_client().table("waitlist").select("*").eq("restaurant_id", restaurant_id).execute()
 
         entries = wl_result.data or []
 
@@ -679,7 +686,7 @@ def getOptimalTableRecommendations(restaurant_id: str, party_size: int, booking_
         end_time = start_time + timedelta(minutes=turn_time_minutes)
         
         # Call the suggest_optimal_tables database function
-        result = supabase.rpc('suggest_optimal_tables', {
+        result = get_supabase_client().rpc('suggest_optimal_tables', {
             'p_restaurant_id': restaurant_id,
             'p_party_size': party_size,
             'p_start_time': start_time.isoformat(),
@@ -705,7 +712,7 @@ def getOptimalTableRecommendations(restaurant_id: str, party_size: int, booking_
         # Fetch detailed table information
         tables_info = []
         if table_ids:
-            tables_result = supabase.table("restaurant_tables").select("""
+            tables_result = get_supabase_client().table("restaurant_tables").select("""
                 id, table_number, table_type, capacity, min_capacity, max_capacity,
                 features, x_position, y_position, priority_score
             """).in_("id", table_ids).execute()
@@ -747,7 +754,7 @@ def getTableCombinationsNow(restaurant_id: str, party_size: int) -> str:
         current_time = datetime.now()
         
         # Call the suggest_optimal_tables database function
-        result = supabase.rpc('suggest_optimal_tables', {
+        result = get_supabase_client().rpc('suggest_optimal_tables', {
             'p_restaurant_id': restaurant_id,
             'p_party_size': party_size,
             'p_start_time': current_time.isoformat(),
@@ -773,7 +780,7 @@ def getTableCombinationsNow(restaurant_id: str, party_size: int) -> str:
         # Fetch detailed table information
         tables_info = []
         if table_ids:
-            tables_result = supabase.table("restaurant_tables").select("""
+            tables_result = get_supabase_client().table("restaurant_tables").select("""
                 id, table_number, table_type, capacity, min_capacity, max_capacity,
                 features, x_position, y_position, priority_score
             """).in_("id", table_ids).execute()
@@ -814,7 +821,7 @@ def validateTableCombination(restaurant_id: str, table_ids: str, party_size: int
         table_id_list = [id.strip() for id in table_ids.split(',') if id.strip()]
         
         # Call the validate_table_combination database function
-        result = supabase.rpc('validate_table_combination', {
+        result = get_supabase_client().rpc('validate_table_combination', {
             'p_table_ids': table_id_list,
             'p_party_size': party_size
         }).execute()
@@ -847,7 +854,7 @@ def getTableAvailabilityReport(restaurant_id: str, date: str) -> str:
     print(f"Staff AI is generating table availability report for {date}")
     try:
         # Call the get_table_availability_by_hour database function
-        result = supabase.rpc('get_table_availability_by_hour', {
+        result = get_supabase_client().rpc('get_table_availability_by_hour', {
             'p_restaurant_id': restaurant_id,
             'p_date': date
         }).execute()
@@ -978,12 +985,18 @@ def create_staff_conversation_memory(max_history: int = 20):
     """Create a new conversation memory instance for staff agent."""
     return StaffConversationMemory(max_history)
 
-def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None) -> str:
+def chat_with_staff_bot(user_input: str, restaurant_id: str = None, memory=None, authenticated_client=None, current_user=None) -> str:
     """
     Function to chat with the restaurant staff bot. 
     Supports conversation memory for contextual responses.
+    Now supports authenticated Supabase client for RLS compliance.
     """
     try:
+        # Set up thread-local storage for authenticated client
+        import threading
+        if authenticated_client:
+            threading.current_thread().supabase_client = authenticated_client
+        
         # Enhance the user input with restaurant context if provided
         if restaurant_id:
             enhanced_input = f"[Restaurant ID: {restaurant_id}] {user_input}"

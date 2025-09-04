@@ -42,6 +42,13 @@ class AgentState(TypedDict):
 # Get timezone for consistent date handling
 _LOCAL_TZ = tz.gettz(os.getenv("AVAILABILITY_TZ", "Asia/Beirut")) or tz.UTC
 
+def get_supabase_client() -> Optional[Client]:
+    """Get the appropriate Supabase client (authenticated if available, otherwise global)"""
+    import threading
+    if hasattr(threading.current_thread(), 'supabase_client'):
+        return threading.current_thread().supabase_client
+    return supabase
+
 # Conversation memory system
 class ConversationMemory:
     def __init__(self, max_history: int = 20):
@@ -213,16 +220,17 @@ tools.append(finishedUsingTools)
 # User profile data is now pre-fetched and provided in conversation context
 # No need for getUserProfile tool - data comes from external source for security
 
-def fetch_user_profile(user_id: str) -> Optional[dict]:
+def fetch_user_profile(user_id: str, client: Optional[Client] = None) -> Optional[dict]:
     """Fetch user profile data externally (not as an AI tool).
     Returns user profile dict or None if not found/error."""
     try:
-        if not supabase or not user_id or not user_id.strip():
+        client_to_use = client if client else supabase
+        if not client_to_use or not user_id or not user_id.strip():
             return None
         
         print(f"Fetching user profile for user_id: {user_id}")
         result = (
-            supabase
+            client_to_use
             .table("profiles")
             .select("full_name, allergies, favorite_cuisines, dietary_restrictions, preferred_party_size, loyalty_points")
             .eq("id", user_id.strip())
@@ -270,12 +278,13 @@ def getRestaurantsByCuisineType(cuisineType: str) -> str:
     cuisineType=cuisineType.strip().capitalize()
     print(f"AI is looking for restaurants with cuisine type: {cuisineType}")
     try:
-        if not supabase:
+        client = get_supabase_client()
+        if not client:
             return json.dumps([])
         # Use ilike for case-insensitive matching in PostgreSQL/Supabase with wildcards
         pattern = f"%{cuisineType}%" if cuisineType else "%"
         result = (
-            supabase
+            client
             .table("restaurants")
             .select(restaurants_table_columns)
             .ilike("cuisine_type", pattern)
@@ -301,10 +310,11 @@ def getAllRestaurants() -> str:
     """Request all restaurants with all their info from the database"""
     print("AI is looking for all restaurants")
     try:
-        if not supabase:
+        client = get_supabase_client()
+        if not client:
             return json.dumps([])
         result = (
-            supabase
+            client
             .table("restaurants")
             .select(restaurants_table_columns)
             .order("ai_featured", desc=True)
@@ -591,18 +601,35 @@ graph.add_edge("tools", "agent")
 # Compile the graph
 app = graph.compile()
 
-def chat_with_bot(user_input: str, memory: Optional[ConversationMemory] = None, user_id: Optional[str] = None) -> str:
+def chat_with_bot(user_input: str, memory: Optional[ConversationMemory] = None, user_id: Optional[str] = None, authenticated_client: Optional[Client] = None, current_user: Optional[dict] = None) -> str:
     """
     Function to chat with the bot. Can use conversation memory for context.
     If memory is provided, maintains conversation history.
     If memory is None, operates in stateless mode (for API usage).
     If user_id is provided, pre-fetches user profile for personalization.
+    If authenticated_client is provided, uses it for database operations with RLS.
     """
     try:
+        # Use authenticated client if provided, otherwise fall back to global supabase client
+        client_to_use = authenticated_client if authenticated_client else supabase
+        
+        # Store client in a thread-local variable so tools can access it
+        import threading
+        if not hasattr(threading.current_thread(), 'supabase_client'):
+            threading.current_thread().supabase_client = client_to_use
+        else:
+            threading.current_thread().supabase_client = client_to_use
+        
         # Fetch user profile data if user_id provided
         user_profile = None
-        if user_id:
-            user_profile = fetch_user_profile(user_id)
+        if user_id and client_to_use:
+            user_profile = fetch_user_profile(user_id, client_to_use)
+        
+        # Log authentication status
+        if current_user:
+            print(f"Chat request from authenticated user: {current_user.get('email', 'unknown')} (ID: {current_user.get('id', 'unknown')})")
+        else:
+            print("Chat request from unauthenticated user")
         
         # Lightweight intent detection to nudge the LLM to use tools and include IDs
         ui_lower = (user_input or "").lower()

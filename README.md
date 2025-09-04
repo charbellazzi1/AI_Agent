@@ -122,8 +122,8 @@ fetch('/api/staff/chat', {
 
 ### **Documentation**
 ```
-├── SECURITY_FEATURES.md          # Complete security implementation guide
-├── SECURITY_DOCUMENTATION.md     # Detailed security documentation
+├── SECURITY_DOCUMENTATION.md     # Complete security implementation & features
+├── STAFF_CHAT_API_GUIDE.md       # Staff API integration with troubleshooting
 ├── ADVANCED_TABLE_RECOMMENDATIONS.md  # Table recommendation system
 ├── RMS_DATABASE_*.md             # Database schema and relationships
 └── .github/copilot-instructions.md    # Development guidelines
